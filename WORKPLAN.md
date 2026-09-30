@@ -6,6 +6,33 @@ as a record of what was built; current milestones use TTI-O names.
 
 ---
 
+## Take these first when work resumes (2026-09-30)
+
+These gaps decide whether a .tio can stand in for BAM or CRAM 3.1 on
+aligned reads, so they come before new features.
+
+1. **Carry SAM optional tags.** The BAM and SAM importers keep fields
+   1-11 and discard the rest (Gotcha §152) in Python, Java and ObjC,
+   so a .tio made from a BAM is not a lossless copy of it. On the
+   HG002 2x250 GRCh38 BAM the tags are about 11.3% of each record:
+   PG 15.0 bytes, MD 13.6, PQ 7.8, AS and UQ 7.6, SM 7.4, AM 7.2,
+   NM 6.9. This needs a format-spec channel for them, a codec choice
+   (MD and NM can be recomputed from the reference and the alignment,
+   as CRAM does), import and export in Python, Java and ObjC, and a
+   conformance round trip.
+2. **Release and re-measure REF_DIFF_V2 with unmapped reads.** The fix
+   is in `[Unreleased]`: the kernel carries a CIGAR `*` read in the UL
+   substream and the writers no longer fall back to BASE_PACK. The
+   sizes on record predate it: on NA12878 WES chr22 TTI-O was 64.1 MB
+   against BAM 66.4 MB and CRAM 3.1 small 32.0 MB, and on HG002 2x250
+   chr22 1,000 MB with GRCh38 against CRAM 3.1 small 825 MB. After the
+   release, measure both slices and the whole HG002 BAM against CRAM
+   3.1 again. The comment above the BASE_PACK fallback in
+   `SpectralDatasetGenomicWriter.java` still names unmapped reads as a
+   cause of it, and they no longer are.
+
+---
+
 > **Status (2026-05-24).** v1.0.0 shipped 2026-05-04. The
 > three-language reference implementation (ObjC normative,
 > Python `ttio`, Java `global.thalion.ttio`) is feature-frozen

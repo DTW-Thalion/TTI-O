@@ -75,6 +75,10 @@ public final class FeatureFlags {
      *  of the file normally (the graphs are a separate group
      *  hierarchy). */
     public static final String OPT_ASSEMBLY_GRAPH = "opt_assembly_graph";
+    /** one or more genomic runs carry SAM optional fields as a
+     *  {@code signal_channels/tags} channel (SAM_TAGS, codec id 18;
+     *  M101, format-spec §10.13). Tag-less files never carry it. */
+    public static final String OPT_SAM_TAGS = "opt_sam_tags";
 
     private static final Set<String> REQUIRED = Set.of(
         BASE_V1, COMPOUND_IDENTIFICATIONS, COMPOUND_QUANTIFICATIONS,

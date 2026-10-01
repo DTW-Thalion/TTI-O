@@ -122,6 +122,9 @@ public class GenomicRun
     // — separate cache from decodedReadNames
     // (Option A from §2.3, lower-risk than a generalised dict).
     private List<String> decodedCigars = null;
+    /** M101: decoded SAM_TAGS channel, one string per read; empty when
+     *  the run has no tags channel. Null until first access. */
+    private List<String> decodedTags = null;
     // lazy decode cache for integer channels. Per Binding
     // Decision §116 this is a separate cache from decodedByteChannels
     // (byte[]) and decodedReadNames (List<String>) because the value
@@ -700,6 +703,8 @@ public class GenomicRun
         long   matePos   = matePosAt(i);
         int    tlen      = mateTlenAt(i);
 
+        List<String> tags = allTags();
+
         return new AlignedRead(
             readName,
             index().chromosomeAt(i),
@@ -711,7 +716,109 @@ public class GenomicRun
             index().flagsAt(i),
             mateChrom,
             matePos,
-            tlen);
+            tlen,
+            tags.isEmpty() ? "" : tags.get(i));
+    }
+
+    /** True when the run carries the SAM tags channel (M101). */
+    public boolean hasTagsChannel() {
+        if (hasTagsCached == null) {
+            boolean has = false;
+            if (runGroup.hasChild("signal_channels")) {
+                try (StorageGroup sig = runGroup.openGroup("signal_channels")) {
+                    has = sig.hasChild("tags");
+                }
+            }
+            hasTagsCached = has;
+        }
+        return hasTagsCached;
+    }
+    private Boolean hasTagsCached;
+
+    /** Read {@code i}'s SAM tag text (M101); {@code ""} when the run
+     *  has no tags channel. */
+    public String tagsAt(int i) {
+        if (i < 0 || i >= readCount()) {
+            throw new IndexOutOfBoundsException(
+                "read index " + i + " out of range [0, " + readCount() + ")");
+        }
+        if (blockTable != null) {
+            if (!hasTagsChannel()) return "";
+            int b = blockTable.blockFor(i);
+            return blockView(b).tagsAt(i - (int) blockTable.readStart[b]);
+        }
+        List<String> tags = allTags();
+        return tags.isEmpty() ? "" : tags.get(i);
+    }
+
+    /** Every read's SAM tag text (M101), decoded once; empty when the
+     *  run has no {@code tags} channel. */
+    private List<String> allTags() {
+        if (decodedTags != null) return decodedTags;
+        ensureSignalChannels();
+        if (!signalChannels.hasChild("tags")) {
+            decodedTags = List.of();
+            return decodedTags;
+        }
+        byte[] blob;
+        long codecId;
+        try (StorageDataset ds = signalChannels.openDataset("tags")) {
+            Object v = ds.getAttribute("compression");
+            codecId = v instanceof Number num ? num.longValue() : 0L;
+            blob = (byte[]) ds.readSlice(0L, ds.shape()[0]);
+        }
+        if (codecId != global.thalion.ttio.Enums.Compression.SAM_TAGS.ordinal()) {
+            throw new IllegalStateException(
+                "signal_channel 'tags': @compression=" + codecId
+                + " is not SAM_TAGS (18), the only codec of the tags channel");
+        }
+        decodedTags = ((global.thalion.ttio.codecs.registry.DecodedChannel.StrList)
+            global.thalion.ttio.codecs.registry.CodecRegistry.CODEC_REGISTRY
+                .get(global.thalion.ttio.Enums.Compression.SAM_TAGS)
+                .decode(new global.thalion.ttio.codecs.registry.ChannelPayload.BytesPayload(blob),
+                    codecContext())).names();
+        return decodedTags;
+    }
+
+    /** References for SAM_TAGS MD/NM derivation, indexed like
+     *  {@code ownChromIds}. The writer derives only on REF_DIFF_V2 runs
+     *  (binding decision §96), whose one chromosome resolves the same
+     *  way the sequences decode does; any other run gets none. */
+    private List<byte[]> tagReferences(List<String> chromTable,
+            global.thalion.ttio.codecs.ReferenceResolver resolver) {
+        if (!isSequencesRefDiffV2() || chromTable == null) return List.of();
+        byte[] head;
+        try (StorageGroup seqGrp = signalChannels.openGroup("sequences");
+             StorageDataset ds = seqGrp.openDataset("refdiff_v2")) {
+            // The outer header is 38 bytes plus a uint16-length URI.
+            long len = Math.min(ds.shape()[0], 38L + 0xFFFF);
+            head = (byte[]) ds.readSlice(0L, len);
+        }
+        RefDiffHeader h = RefDiffHeader.of(head);
+        java.util.TreeSet<String> names = new java.util.TreeSet<>();
+        for (int i = 0; i < index().count(); i++) names.add(index().chromosomeAt(i));
+        names.remove("*");
+        names.remove("");
+        // Same name -> id map as the ownChromIds derivation.
+        java.util.Map<String, Integer> nameToId = new java.util.LinkedHashMap<>();
+        for (int j = 0; j < chromTable.size(); j++) nameToId.put(chromTable.get(j), j);
+        List<byte[]> refs = new ArrayList<>(java.util.Collections.nCopies(chromTable.size(), (byte[]) null));
+        if (names.size() == 1 && nameToId.containsKey(names.first())) {
+            if (resolver == null) {
+                throw new IllegalStateException(
+                    "SAM_TAGS MD/NM decode needs a reference resolver");
+            }
+            refs.set(nameToId.get(names.first()),
+                resolver.resolve(h.uri(), h.md5(), names.first()));
+        }
+        return refs;
+    }
+
+    private record RefDiffHeader(String uri, byte[] md5) {
+        static RefDiffHeader of(byte[] head) {
+            var bh = global.thalion.ttio.codecs.RefDiffV2.parseBlobHeader(head);
+            return new RefDiffHeader(bh.referenceUri(), bh.referenceMd5());
+        }
     }
 
     /** Domain-natural alias for {@link #objectAtIndex(int)}. */
@@ -936,8 +1043,9 @@ public class GenomicRun
         // mate_info/chrom_names sidecar, byte-identical to _decodeMateV2.
         // Only meaningful when an inline_v2 mate layout exists.
         short[] ownChromIds = null;
+        List<String> chromTable = null;
         if (isMateInfoInlineV2()) {
-            List<String> chromTable = readMateInfoChromNamesTable();
+            chromTable = readMateInfoChromNamesTable();
             java.util.LinkedHashMap<String, Integer> nameToId =
                 new java.util.LinkedHashMap<>();
             for (int j = 0; j < chromTable.size(); j++) {
@@ -953,6 +1061,7 @@ public class GenomicRun
         }
 
         global.thalion.ttio.codecs.ReferenceResolver resolver = resolverForViews();
+        final List<String> tagChromTable = chromTable;
 
         codecCtxCache = global.thalion.ttio.codecs.registry.CodecContext.builder()
             .readLengths(readLengths).revcompFlags(revcomp).readCount(n)
@@ -961,6 +1070,7 @@ public class GenomicRun
             .cigarsProvider(() -> allCigars().toArray(new String[0]))
             .referenceResolver(resolver)
             .sequencesProvider(() -> byteChannelFull("sequences"))
+            .tagReferencesProvider(() -> tagReferences(tagChromTable, resolver))
             .build();
         return codecCtxCache;
     }

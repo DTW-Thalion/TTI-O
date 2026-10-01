@@ -213,8 +213,10 @@ public final class EncryptedTransport {
             throws IOException {
         try (StorageGroup run = gRuns.openGroup(runName);
              StorageGroup sig = run.openGroup("signal_channels")) {
-            List<String> channelNames = new ArrayList<>(2);
-            for (String c : new String[]{"sequences", "qualities"}) {
+            // Genomic encrypts sequences + qualities (M90.1) and, when
+            // the run carries them, the SAM tags (M101).
+            List<String> channelNames = new ArrayList<>(3);
+            for (String c : new String[]{"sequences", "qualities", "tags"}) {
                 if (sig.hasChild(c + "_segments")) channelNames.add(c);
             }
             String firstCh = channelNames.isEmpty()
@@ -362,9 +364,9 @@ public final class EncryptedTransport {
                 writer.emitRawPacket(PacketType.GENOMIC_RUN_SIDECAR, 0,
                                      datasetId, 0, p.toByteArray());
 
-                List<String> blockChannels =
-                    global.thalion.ttio.genomics.GenomicBlocks
-                        .BLOCK_CHANNELS;
+                // The index's own channel set: a run without tags sends
+                // the five required entries, exactly as before M101.
+                List<String> blockChannels = t.channels();
                 for (int b = 0; b < t.count(); b++) {
                     java.io.ByteArrayOutputStream bp =
                         new java.io.ByteArrayOutputStream();
@@ -510,8 +512,10 @@ public final class EncryptedTransport {
         try (StorageGroup run = gRuns.openGroup(runName);
              StorageGroup sig = run.openGroup("signal_channels");
              StorageGroup idx = run.openGroup("genomic_index")) {
-            List<String> channelNames = new ArrayList<>(2);
-            for (String c : new String[]{"sequences", "qualities"}) {
+            // Genomic encrypts sequences + qualities (M90.1) and, when
+            // the run carries them, the SAM tags (M101).
+            List<String> channelNames = new ArrayList<>(3);
+            for (String c : new String[]{"sequences", "qualities", "tags"}) {
                 if (sig.hasChild(c + "_segments")) channelNames.add(c);
             }
             int acqMode = intAttr(run, "acquisition_mode", 0);
@@ -1591,28 +1595,33 @@ public final class EncryptedTransport {
             List<BlockSidecar> sidecars = new ArrayList<>(acc.blockSidecars);
             sidecars.sort(java.util.Comparator.comparingInt(
                 b -> b.blockIndex));
-            List<String> order = global.thalion.ttio.genomics
-                .GenomicBlocks.BLOCK_CHANNELS;
-            int codecBase = 4 + 2 * order.size();
+            // The index carries the tags triple when the sender's did
+            // (M101): its block sidecars then list a tags entry.
+            boolean withTags = false;
+            for (BlockSidecar bs : sidecars) withTags |= bs.channels.containsKey("tags");
+            List<String> order = new ArrayList<>(
+                global.thalion.ttio.genomics.GenomicBlocks.REQUIRED_BLOCK_CHANNELS);
+            if (withTags) order.add("tags");
+            var fields = global.thalion.ttio.genomics.GenomicStreamWriter
+                .indexFields(withTags);
             try (StorageGroup blocks = run.createGroup("blocks");
                  StorageDataset idxDs = blocks.createCompoundDataset(
-                     "index",
-                     global.thalion.ttio.genomics.GenomicStreamWriter
-                         .INDEX_FIELDS,
-                     0, true, 1024)) {
+                     "index", fields, 0, true, 1024)) {
                 List<Object[]> rows = new ArrayList<>(sidecars.size());
                 for (BlockSidecar bs : sidecars) {
-                    Object[] row = new Object[4 + 3 * order.size()];
+                    Object[] row = new Object[fields.size()];
                     row[0] = bs.readStart;
                     row[1] = bs.nReads;
                     row[2] = bs.baseStart;
                     row[3] = bs.nBases;
-                    for (int ci = 0; ci < order.size(); ci++) {
-                        long[] triple = bs.channels.get(order.get(ci));
-                        row[4 + 2 * ci] = triple == null ? 0L : triple[0];
-                        row[4 + 2 * ci + 1] = triple == null
-                            ? 0L : triple[1];
-                        row[codecBase + ci] = triple == null
+                    for (String ch : order) {
+                        long[] triple = bs.channels.get(ch);
+                        int oc = global.thalion.ttio.genomics
+                            .GenomicStreamWriter.offsetColumn(ch);
+                        row[oc] = triple == null ? 0L : triple[0];
+                        row[oc + 1] = triple == null ? 0L : triple[1];
+                        row[global.thalion.ttio.genomics.GenomicStreamWriter
+                            .codecColumn(ch)] = triple == null
                             ? 0 : (int) triple[2];
                     }
                     rows.add(row);

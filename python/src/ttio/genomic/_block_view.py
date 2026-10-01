@@ -28,6 +28,9 @@ class BlockTable:
     n_bases: np.ndarray         # uint64
     ranges: dict[str, tuple[np.ndarray, np.ndarray]]   # channel -> (off, len)
     codecs: dict[str, np.ndarray] | None = None        # channel -> codec id per block
+    # The channels whose columns the index carries: the required five,
+    # plus "tags" when the run has the tags triple (M101).
+    channels: tuple = _blocks.REQUIRED_BLOCK_CHANNELS
 
     @property
     def count(self) -> int:
@@ -50,14 +53,27 @@ class BlockTable:
         rows = run_group.open_group("blocks").open_dataset("index").read_rows()
         def col(name, dt):
             return np.asarray([r[name] for r in rows], dtype=dt)
-        ranges = {ch: (col(f"{ch}_off", np.uint64), col(f"{ch}_len", np.uint64))
+
+        # An optional channel's columns are absent from runs that do
+        # not carry it: every block then has an empty range.
+        def present(ch):
+            return ch in _blocks.REQUIRED_BLOCK_CHANNELS or not rows or f"{ch}_off" in rows[0]
+
+        def zeros(dt):
+            return np.zeros(len(rows), dtype=dt)
+        ranges = {ch: ((col(f"{ch}_off", np.uint64), col(f"{ch}_len", np.uint64))
+                       if present(ch) else (zeros(np.uint64), zeros(np.uint64)))
                   for ch in _blocks.BLOCK_CHANNELS}
         codecs = None
         if rows and f"{_blocks.BLOCK_CHANNELS[0]}_codec" in rows[0]:
-            codecs = {ch: col(f"{ch}_codec", np.uint32) for ch in _blocks.BLOCK_CHANNELS}
+            codecs = {ch: col(f"{ch}_codec", np.uint32) if present(ch) else zeros(np.uint32)
+                      for ch in _blocks.BLOCK_CHANNELS}
+        channels = tuple(ch for ch in _blocks.BLOCK_CHANNELS
+                         if ch in _blocks.REQUIRED_BLOCK_CHANNELS
+                         or (rows and f"{ch}_off" in rows[0]))
         return cls(read_start=col("read_start", np.uint64), n_reads=col("n_reads", np.uint32),
                    base_start=col("base_start", np.uint64), n_bases=col("n_bases", np.uint64),
-                   ranges=ranges, codecs=codecs)
+                   ranges=ranges, codecs=codecs, channels=channels)
 
 
 _INDEX_ARRAYS = (("lengths", Precision.UINT32), ("positions", Precision.INT64),

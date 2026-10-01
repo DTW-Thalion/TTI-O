@@ -11,6 +11,7 @@
 #import "Codecs/TTIOMateInfoV2.h"
 #import "Codecs/TTIONameTokenizerV2.h"
 #import "Codecs/TTIORefDiffV2.h"
+#import "Codecs/TTIOSamTags.h"
 #import <pthread.h>
 
 static NSError *_TTIOCodecError(NSString *msg) {
@@ -284,6 +285,55 @@ static pthread_once_t gOnce = PTHREAD_ONCE_INIT;
 }
 @end
 
+// ── sam_tags (codec 18, M101): context-aware, no embedded reference ─
+// MD/NM derivation needs the reads' sequences, CIGARs, positions and
+// chromosome ids plus the reference bases; without tag references
+// none of that is read.
+@interface _TTIOSamTagsCodec : NSObject <TTIOCodec> @end
+@implementation _TTIOSamTagsCodec
+- (TTIOCompression)codecId { return TTIOCompressionSamTags; }
+- (BOOL)isContextAware { return YES; }
+- (BOOL)needsEmbeddedReference { return NO; }
+- (TTIODecodedChannel *)decode:(TTIOChannelPayload *)p context:(TTIOCodecContext *)ctx error:(NSError **)e {
+    NSUInteger n = ctx.readCount ? ctx.readCount.unsignedIntegerValue : 0;
+    TTIOSamTagsContext *tc = [[TTIOSamTagsContext alloc] init];
+    tc.references = ctx.tagReferencesProvider ? ctx.tagReferencesProvider() : nil;
+    if ([tc derives]) {
+        NSMutableData *off = [NSMutableData dataWithLength:(n + 1) * sizeof(uint64_t)];
+        uint64_t *o = (uint64_t *)[off mutableBytes];
+        for (NSUInteger i = 0; i < n && i < ctx.readLengths.count; i++) {
+            o[i + 1] = o[i] + (uint64_t)[ctx.readLengths[i] unsignedLongLongValue];
+        }
+        tc.sequences = ctx.sequencesProvider ? ctx.sequencesProvider() : nil;
+        tc.seqOffsets = off;
+        tc.cigars = ctx.cigarsProvider ? ctx.cigarsProvider() : nil;
+        tc.positions = ctx.positions;
+        tc.chromIds = ctx.ownChromIds;
+    } else {
+        tc = nil;
+    }
+    NSArray<NSString *> *tags = [TTIOSamTags decodeData:((TTIOBytesPayload *)p).bytes
+                                                 nReads:n context:tc error:e];
+    return tags ? [[TTIODecodedStringList alloc] initWithNames:tags] : nil;
+}
+- (TTIOEncodedChannel *)encode:(TTIODecodedChannel *)v context:(TTIOCodecContext *)ctx error:(NSError **)e {
+    TTIOSamTagsContext *tc = [[TTIOSamTagsContext alloc] init];
+    tc.references = ctx.tagReferences;
+    if ([tc derives]) {
+        tc.sequences = ctx.sequences;
+        tc.seqOffsets = ctx.offsets;
+        tc.cigars = ctx.cigarsProvider ? ctx.cigarsProvider() : nil;
+        tc.positions = ctx.positions;
+        tc.chromIds = ctx.ownChromIds;
+    } else {
+        tc = nil;
+    }
+    NSData *out = [TTIOSamTags encodeTags:((TTIODecodedStringList *)v).names
+                                  context:tc error:e];
+    return out ? [[TTIOEncodedDatasetBytes alloc] initWithBytes:out] : nil;
+}
+@end
+
 static void _buildRegistry(void) {
     gRegistry = @{
         @(TTIOCompressionRansOrder0): [[_TTIORansCodec alloc] initWithId:TTIOCompressionRansOrder0 order:0],
@@ -295,6 +345,7 @@ static void _buildRegistry(void) {
         @(TTIOCompressionFqzcompNx16Z):    [[_TTIOFqzcompCodec alloc] init],
         @(TTIOCompressionMateInlineV2):    [[_TTIOMateInfoCodec alloc] init],
         @(TTIOCompressionRefDiffV2):       [[_TTIORefDiffCodec alloc] init],
+        @(TTIOCompressionSamTags):         [[_TTIOSamTagsCodec alloc] init],
     };
 }
 

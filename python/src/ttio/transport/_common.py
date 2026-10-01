@@ -106,6 +106,24 @@ def _decode_wire_codec(payload: bytes, codec: int) -> bytes:
     )
 
 
+def _run_has_tags(run) -> bool:
+    """True when a stored genomic run carries the SAM tags channel (M101)."""
+    try:
+        return run.group.open_group("signal_channels").has_child("tags")
+    except Exception:
+        return False
+
+
+def genomic_channel_names(run) -> list[str]:
+    """The DatasetHeader channel list of a genomic run: the five M89
+    channels, plus ``tags`` (transport-spec 4.3.1) when the run carries
+    SAM tags, so a tag-less run's stream is unchanged."""
+    names = ["sequences", "qualities", "cigar", "read_name", "mate_chromosome"]
+    if _run_has_tags(run):
+        names.append("tags")
+    return names
+
+
 def _iter_genomic_run_access_units(run) -> Iterator[tuple[int, "AccessUnit"]]:
     """Yield ``(au_sequence, AccessUnit)`` tuples for every AlignedRead
     in ``run``.
@@ -147,6 +165,7 @@ def _iter_genomic_run_access_units(run) -> Iterator[tuple[int, "AccessUnit"]]:
         seq_codec = compression_none
     if qual_codec not in _WIRE_CODEC_IDS:
         qual_codec = compression_none
+    has_tags = _run_has_tags(run)
 
     # iter_reads holds one decoded block at a time for blocks_v1 and
     # walks the whole-channel caches for the v1.8 layout.
@@ -172,6 +191,10 @@ def _iter_genomic_run_access_units(run) -> Iterator[tuple[int, "AccessUnit"]]:
                         compression_none, len(mate_chr_bytes),
                         mate_chr_bytes),
         ]
+        if has_tags:
+            tag_bytes = (r.tags or "").encode("utf-8")
+            channels.append(ChannelData("tags", precision_uint8, compression_none,
+                                        len(tag_bytes), tag_bytes))
         au = AccessUnit(
             spectrum_class=5,
             acquisition_mode=acq_mode,

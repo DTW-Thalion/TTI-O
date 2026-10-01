@@ -36,6 +36,7 @@
 + (NSString *)featureMS2ActivationDetail     { return @"opt_ms2_activation_detail"; }
 + (NSString *)featureOptGenomic              { return @"opt_genomic"; }
 + (NSString *)featureOptAssemblyGraph        { return @"opt_assembly_graph"; }
++ (NSString *)featureOptSamTags              { return @"opt_sam_tags"; }
 + (NSString *)featureNoSignalIntDups         { return @"opt_no_signal_int_dups"; }
 
 + (NSString *)formatVersionForRoot:(TTIOHDF5Group *)root

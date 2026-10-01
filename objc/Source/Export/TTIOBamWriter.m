@@ -273,10 +273,13 @@ static BOOL bamWriterSamtoolsAvailable(NSString **outBinary, NSError **error)
             }
         }
 
-        [out appendFormat:@"%@\t%u\t%@\t%lld\t%u\t%@\t%@\t%lld\t%d\t%@\t%@\n",
+        // M101: the optional fields follow column 11 verbatim.
+        NSString *tags = (i < run.tags.count) ? run.tags[i] : @"";
+        [out appendFormat:@"%@\t%u\t%@\t%lld\t%u\t%@\t%@\t%lld\t%d\t%@\t%@%@%@\n",
                           qname, (unsigned)flag, rname, (long long)p,
                           (unsigned)mq, cigar, rnext, (long long)pnext,
-                          (int)tlen, seqStr, qualStr];
+                          (int)tlen, seqStr, qualStr,
+                          tags.length ? @"\t" : @"", tags];
 
         // Per-N progress fire. Total = n.
         if (((i + 1) % TTIOBamWriterProgressIntervalReads) == 0) {
@@ -311,9 +314,12 @@ static BOOL bamWriterSamtoolsAvailable(NSString **outBinary, NSError **error)
         qualStr = (q.length == 0 || allFF) ? @"*"
             : ([[NSString alloc] initWithData:q encoding:NSISOLatin1StringEncoding] ?: @"*");
     }
-    return [NSString stringWithFormat:@"%@\t%u\t%@\t%lld\t%u\t%@\t%@\t%lld\t%d\t%@\t%@\n",
+    // M101: the optional fields follow column 11 verbatim.
+    NSString *tags = r.tags ?: @"";
+    return [NSString stringWithFormat:@"%@\t%u\t%@\t%lld\t%u\t%@\t%@\t%lld\t%d\t%@\t%@%@%@\n",
             qname, (unsigned)r.flags, rname, (long long)r.position, (unsigned)r.mappingQuality,
-            cigar, rnext, (long long)pnext, (int)r.templateLength, seqStr, qualStr];
+            cigar, rnext, (long long)pnext, (int)r.templateLength, seqStr, qualStr,
+            tags.length ? @"\t" : @"", tags];
 }
 
 // ── samtools command builder (overridable). Returns an array of arg

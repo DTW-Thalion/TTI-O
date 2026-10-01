@@ -50,6 +50,7 @@ from ._common import (
     _SPECTRUM_CLASS_TO_WIRE,
     _iter_genomic_run_access_units,
     _read_mate_chrom_names_table,
+    genomic_channel_names,
 )
 
 #: Writer-side names for the spectral AU channel codecs, in the order
@@ -1316,8 +1317,7 @@ class TransportWriter:
                 name=name,
                 acquisition_mode=int(grun.acquisition_mode),
                 spectrum_class="TTIOGenomicRead",
-                channel_names=["sequences", "qualities",
-                               "cigar", "read_name", "mate_chromosome"],
+                channel_names=genomic_channel_names(grun),
                 instrument_json=_genomic_run_metadata_json(grun),
                 expected_au_count=len(grun),
             )

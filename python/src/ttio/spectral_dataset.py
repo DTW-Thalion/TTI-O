@@ -1013,6 +1013,11 @@ class SpectralDataset:
         has_graphs = bool(assembly_graphs)
         if has_graphs and "opt_assembly_graph" not in feature_list:
             feature_list = feature_list + ["opt_assembly_graph"]
+        # M101: opt_sam_tags when any genomic run carries SAM optional
+        # fields (a tags channel); tag-less files are unchanged.
+        if (any(r.tags and any(r.tags) for r in (genomic_runs or {}).values())
+                and "opt_sam_tags" not in feature_list):
+            feature_list = feature_list + ["opt_sam_tags"]
         format_version = "1.0"
 
         # ------------------------------------------------------------------

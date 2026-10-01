@@ -108,6 +108,19 @@ NS_ASSUME_NONNULL_BEGIN
  *  Defaults to nil (attribute absent). */
 @property (nonatomic, copy, nullable) NSString *readRole;
 
+/** M101: SAM optional fields per read (columns 12+, tab-joined as
+ *  samtools prints them; <code>@""</code> for a read without tags).
+ *  nil, or an array whose entries are all empty, writes no
+ *  <code>tags</code> channel. Stored with SAM_TAGS (codec id 18);
+ *  MD:Z / NM:i are recomputed from the reference when the sequences
+ *  channel is REF_DIFF_V2. Python: <code>tags</code>; Java:
+ *  <code>tags</code>. Defaults to nil. */
+@property (nonatomic, copy, nullable) NSArray<NSString *> *tags;
+
+/** YES when <code>tags</code> holds at least one non-empty entry,
+ *  i.e. the writer will emit a <code>tags</code> channel. */
+- (BOOL)hasTags;
+
 /** REF_DIFF_V2 slice byte budget: a slice closes before the read
  *  that would push it past this many bases (the 10,000-read cap
  *  still applies). 0 (the default) keeps the fixed-count rule.

@@ -497,8 +497,7 @@ a `LazyReference` without loading the FASTA whole. The FASTQ and
 FASTA importers expose the same `iter_batches` / `stream_source`
 surface (the FASTA batches carry the unaligned-import sentinels).
 
-Column mapping (SAM fields 1–11 → model; trailing optional tags are
-discarded):
+Column mapping (SAM fields 1–11 → model, then the optional tags):
 
 | SAM field | Model destination                       |
 |-----------|-----------------------------------------|
@@ -513,6 +512,7 @@ discarded):
 | TLEN      | `template_lengths[i]`                   |
 | SEQ       | concatenated into `sequences`; `*` → 0 bytes |
 | QUAL      | concatenated into `qualities`; `*` → `0xFF`×len(SEQ), or 0 bytes if SEQ also `*` |
+| 12+       | `tags[i]`: the optional fields, tab-joined as samtools prints them (`""` when none); stored as the SAM_TAGS `tags` channel (M101, format-spec §10.13) |
 
 Per-read `offsets`/`lengths` are accumulated from the SEQ byte length as
 records stream in (a `SEQ=*` record contributes a zero-length slice — the

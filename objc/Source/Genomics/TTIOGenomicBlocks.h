@@ -39,9 +39,19 @@ NS_ASSUME_NONNULL_BEGIN
  *  <code>GenomicBlocks</code>. */
 @interface TTIOGenomicBlocks : NSObject
 
-/** Blob channels of a block, in block-index column order:
- *  sequences, qualities, read_names, cigars, mate_info. */
+/** Every blob channel of a block, in block-index column order:
+ *  the required channels, then the optional ones (M101: tags). */
 + (NSArray<NSString *> *)blockChannels;
+
+/** Blob channels every blocks_v1 run indexes: sequences, qualities,
+ *  read_names, cigars, mate_info. */
++ (NSArray<NSString *> *)requiredBlockChannels;
+
+/** Channels whose index columns exist only in runs that carry them
+ *  (M101: tags). Their (off, len, codec) columns follow the required
+ *  channels' codec columns; a reader treats missing columns as an
+ *  empty channel (format-spec 10.12.2). */
++ (NSArray<NSString *> *)optionalBlockChannels;
 
 /** Reads [start, stop) of <code>run</code> as a run of their own,
  *  offsets rebased to 0; run-level metadata shared. */

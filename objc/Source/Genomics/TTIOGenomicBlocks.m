@@ -51,9 +51,19 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
 
 @implementation TTIOGenomicBlocks
 
-+ (NSArray<NSString *> *)blockChannels
++ (NSArray<NSString *> *)requiredBlockChannels
 {
     return @[@"sequences", @"qualities", @"read_names", @"cigars", @"mate_info"];
+}
+
++ (NSArray<NSString *> *)optionalBlockChannels
+{
+    return @[@"tags"];
+}
+
++ (NSArray<NSString *> *)blockChannels
+{
+    return [[self requiredBlockChannels] arrayByAddingObjectsFromArray:[self optionalBlockChannels]];
 }
 
 + (TTIOWrittenGenomicRun *)sliceRun:(TTIOWrittenGenomicRun *)run
@@ -99,6 +109,7 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
     s.optLegacyWholeChannel = run.optLegacyWholeChannel;
     s.readRole = run.readRole;
     s.refDiffSliceBytes = run.refDiffSliceBytes;
+    s.tags = run.tags ? [run.tags subarrayWithRange:rr] : nil;
     return s;
 }
 
@@ -112,7 +123,20 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
                   *seqs = [NSMutableData data], *quals = [NSMutableData data];
     NSMutableArray *cigars = [NSMutableArray array], *names = [NSMutableArray array],
                    *mateChroms = [NSMutableArray array], *chroms = [NSMutableArray array];
+    // M101: nil when no part carries tags; a tag-less part among tagged
+    // ones contributes "" per read.
+    NSMutableArray *tags = nil;
     for (TTIOWrittenGenomicRun *p in parts) {
+        if (p.tags != nil) { tags = [NSMutableArray array]; break; }
+    }
+    for (TTIOWrittenGenomicRun *p in parts) {
+        if (tags != nil) {
+            if (p.tags != nil) {
+                [tags addObjectsFromArray:p.tags];
+            } else {
+                for (NSUInteger i = 0; i < p.cigars.count; i++) [tags addObject:@""];
+            }
+        }
         [positions appendData:p.positionsData];
         [mapqs appendData:p.mappingQualitiesData];
         [flags appendData:p.flagsData];
@@ -159,6 +183,7 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
     c.optLegacyWholeChannel = first.optLegacyWholeChannel;
     c.readRole = first.readRole;
     c.refDiffSliceBytes = first.refDiffSliceBytes;
+    c.tags = tags;
     return c;
 }
 

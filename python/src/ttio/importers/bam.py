@@ -308,9 +308,8 @@ class BamReader:
                             rg_platform = pl
                     continue
 
-                # Alignment record. Per Gotcha §152, only fields 1-11
-                # are parsed; trailing optional tags are discarded.
-                # Use split with maxsplit=11 then take first 11 cols.
+                # Alignment record: fields 1-11, then the optional tags
+                # (M101) kept as their tab-joined text in cols[11].
                 cols = line.split("\t", 11)
                 if len(cols) < 11:
                     raise RuntimeError(
@@ -370,7 +369,7 @@ class BamReader:
                         )
 
                 acc.add(qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen,
-                        seq_bytes, qual_bytes)
+                        seq_bytes, qual_bytes, cols[11] if len(cols) > 11 else "")
                 total_reads += 1
 
                 if total_reads % PROGRESS_INTERVAL_READS == 0:
@@ -486,7 +485,7 @@ class _BatchAccumulator:
 
     __slots__ = ("read_names", "chromosomes", "positions", "mapqs", "flags", "cigars",
                  "mate_chromosomes", "mate_positions", "template_lengths", "offsets",
-                 "lengths", "seq_chunks", "qual_chunks", "running", "n")
+                 "lengths", "seq_chunks", "qual_chunks", "tags", "running", "n")
 
     def __init__(self) -> None:
         self.read_names: list[str] = []
@@ -502,11 +501,13 @@ class _BatchAccumulator:
         self.lengths: list[int] = []
         self.seq_chunks: list[bytes] = []
         self.qual_chunks: list[bytes] = []
+        self.tags: list[str] = []
         self.running = 0
         self.n = 0
 
     def add(self, qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen,
-            seq_bytes, qual_bytes) -> None:
+            seq_bytes, qual_bytes, tags: str = "") -> None:
+        self.tags.append(tags)
         self.read_names.append(qname)
         self.flags.append(flag)
         self.chromosomes.append(rname)
@@ -544,5 +545,6 @@ class _BatchAccumulator:
             mate_positions=np.asarray(self.mate_positions, dtype=np.int64),
             template_lengths=np.asarray(self.template_lengths, dtype=np.int32),
             chromosomes=self.chromosomes,
+            tags=self.tags,
             provenance_records=list(provenance),
         )

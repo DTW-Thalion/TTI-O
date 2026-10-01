@@ -55,14 +55,45 @@ public final class GenomicStreamWriter implements AutoCloseable {
         f.add(new CompoundField("n_reads", CompoundField.Kind.UINT32));
         f.add(new CompoundField("base_start", CompoundField.Kind.UINT64));
         f.add(new CompoundField("n_bases", CompoundField.Kind.UINT64));
-        for (String ch : GenomicBlocks.BLOCK_CHANNELS) {
+        for (String ch : GenomicBlocks.REQUIRED_BLOCK_CHANNELS) {
             f.add(new CompoundField(ch + "_off", CompoundField.Kind.UINT64));
             f.add(new CompoundField(ch + "_len", CompoundField.Kind.UINT64));
         }
-        for (String ch : GenomicBlocks.BLOCK_CHANNELS) {
+        for (String ch : GenomicBlocks.REQUIRED_BLOCK_CHANNELS) {
             f.add(new CompoundField(ch + "_codec", CompoundField.Kind.UINT32));
         }
         INDEX_FIELDS = Collections.unmodifiableList(f);
+        List<CompoundField> t = new ArrayList<>(f);
+        t.add(new CompoundField("tags_off", CompoundField.Kind.UINT64));
+        t.add(new CompoundField("tags_len", CompoundField.Kind.UINT64));
+        t.add(new CompoundField("tags_codec", CompoundField.Kind.UINT32));
+        INDEX_FIELDS_WITH_TAGS = Collections.unmodifiableList(t);
+    }
+
+    /** The schema of a run that carries the tags channel (M101): the
+     *  tags (off, len, codec) triple follows the required columns. */
+    public static final List<CompoundField> INDEX_FIELDS_WITH_TAGS;
+
+    /** The index schema for a run with or without the tags triple. */
+    public static List<CompoundField> indexFields(boolean withTags) {
+        return withTags ? INDEX_FIELDS_WITH_TAGS : INDEX_FIELDS;
+    }
+
+    /** Column of {@code ch}'s offset in a positional index row; its
+     *  length follows, and {@link #codecColumn} gives its codec. */
+    public static int offsetColumn(String ch) {
+        int ci = GenomicBlocks.REQUIRED_BLOCK_CHANNELS.indexOf(ch);
+        if (ci >= 0) return 4 + 2 * ci;
+        if (ch.equals("tags")) return INDEX_FIELDS.size();
+        throw new IllegalArgumentException("not a block channel: " + ch);
+    }
+
+    /** Column of {@code ch}'s codec in a positional index row. */
+    public static int codecColumn(String ch) {
+        int ci = GenomicBlocks.REQUIRED_BLOCK_CHANNELS.indexOf(ch);
+        if (ci >= 0) return 4 + 2 * GenomicBlocks.REQUIRED_BLOCK_CHANNELS.size() + ci;
+        if (ch.equals("tags")) return INDEX_FIELDS.size() + 2;
+        throw new IllegalArgumentException("not a block channel: " + ch);
     }
 
     /** Per-read index arrays: name, precision. */
@@ -181,6 +212,8 @@ public final class GenomicStreamWriter implements AutoCloseable {
     private final Map<String, StorageDataset> channelDs = new LinkedHashMap<>();
     private final Map<String, StorageDataset> idxDs = new LinkedHashMap<>();
     private StorageDataset indexDs;
+    /** The index carries the tags columns (M101). */
+    private boolean withTags;
     private boolean embedded;
     private boolean closed;
     private final List<WrittenGenomicRun> legacyParts = new ArrayList<>();
@@ -411,30 +444,35 @@ public final class GenomicStreamWriter implements AutoCloseable {
     }
 
     private void writeEncoded(WrittenGenomicRun block, GenomicBlocks.BlockBlobs blobs) {
-        ensureLayout();
-        Object[] row = new Object[INDEX_FIELDS.size()];
+        ensureLayout(blobs);
+        byte[] tagBlob = blobs.blobs().get("tags");
+        if (tagBlob != null && tagBlob.length > 0 && !withTags) addTagsColumns();
+        // Rows are filled by position: the required channels keep
+        // their columns and the tags triple trails them (M101).
+        Object[] row = new Object[indexFields(withTags).size()];
         row[0] = readCount;
         row[1] = blobs.nReads();
         row[2] = baseCount;
         row[3] = blobs.nBases();
-        int col = 4;
-        int codecCol = 4 + 2 * GenomicBlocks.BLOCK_CHANNELS.size();
         for (String ch : GenomicBlocks.BLOCK_CHANNELS) {
+            if (ch.equals("tags") && !withTags) continue;
+            int col = offsetColumn(ch);
             byte[] data = blobs.blobs().get(ch);
-            int codec = blobs.codecs().get(ch);
-            row[codecCol++] = codec;
+            if (data == null) data = new byte[0];
+            int codec = blobs.codecs().getOrDefault(ch, 0);
+            row[codecColumn(ch)] = codec;
             StorageDataset ds = channelDs.get(ch);
             if (ds == null) {
                 if (data.length > 0) {
                     ds = createChannel(ch, blobs);
                 } else {
-                    row[col++] = 0L;
-                    row[col++] = 0L;
+                    row[col] = 0L;
+                    row[col + 1] = 0L;
                     continue;
                 }
             }
-            row[col++] = ds.length();
-            row[col++] = (long) data.length;
+            row[col] = ds.length();
+            row[col + 1] = (long) data.length;
             if (data.length > 0) ds.append(data);
         }
         indexDs.append(Collections.singletonList(row));
@@ -476,7 +514,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
         try {
             flush();
             drain(0);
-            if (rg == null) ensureLayout();
+            if (rg == null) ensureLayout(null);
             writeCloseTables();
             if (!opt.provenanceRecords().isEmpty()) {
                 SpectralDatasetGenomicWriter.writeRunProvenance(rg, opt.provenanceRecords());
@@ -524,7 +562,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
         }
     }
 
-    private void ensureLayout() {
+    private void ensureLayout(GenomicBlocks.BlockBlobs first) {
         if (rg != null) return;
         StorageGroup g = runsGroup();
         if (g.hasChild(name)) {
@@ -577,7 +615,9 @@ public final class GenomicStreamWriter implements AutoCloseable {
             run.setAttribute("reference_md5s", json.toString());
         }
         StorageGroup blocks = run.createGroup("blocks");
-        indexDs = blocks.createCompoundDataset("index", INDEX_FIELDS, 0, true, 1024);
+        byte[] firstTags = first == null ? null : first.blobs().get("tags");
+        withTags = firstTags != null && firstTags.length > 0;
+        indexDs = blocks.createCompoundDataset("index", indexFields(withTags), 0, true, 1024);
         StorageGroup idx = run.createGroup("genomic_index");
         for (String[] a : INDEX_ARRAYS) {
             idxDs.put(a[0], idx.createDataset(a[0], Precision.valueOf(a[1]), 0,
@@ -585,6 +625,28 @@ public final class GenomicStreamWriter implements AutoCloseable {
         }
         run.createGroup("signal_channels");
         rg = run;
+    }
+
+    /** The first block with tags arrives after blocks without: give the
+     *  index the tags columns, the earlier blocks an empty range (M101). */
+    @SuppressWarnings("unchecked")
+    private void addTagsColumns() {
+        StorageGroup blocks = rg.openGroup("blocks");
+        List<Object[]> rows = new ArrayList<>();
+        if (blockCount > 0) {
+            for (Object[] r : (List<Object[]>) indexDs.readAll()) {
+                Object[] wide = java.util.Arrays.copyOf(r, INDEX_FIELDS_WITH_TAGS.size());
+                wide[offsetColumn("tags")] = 0L;
+                wide[offsetColumn("tags") + 1] = 0L;
+                wide[codecColumn("tags")] = 0;
+                rows.add(wide);
+            }
+        }
+        indexDs.close();
+        blocks.deleteChild("index");
+        indexDs = blocks.createCompoundDataset("index", INDEX_FIELDS_WITH_TAGS, 0, true, 1024);
+        if (!rows.isEmpty()) indexDs.append(rows);
+        withTags = true;
     }
 
     private StorageDataset createChannel(String ch, GenomicBlocks.BlockBlobs blobs) {
@@ -655,7 +717,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
             opt.signalCompression(), opt.signalCodecOverrides(), List.of(),
             opt.embedReference(), opt.referenceChromSeqs(), null, null,
             opt.optDisableQualitiesV5(), false,
-            opt.readRole(), opt.refDiffSliceBytes());
+            opt.readRole(), opt.refDiffSliceBytes(), run.tags());
     }
 
     private WrittenGenomicRun singleReadRun(AlignedRead r) {
@@ -672,6 +734,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
             opt.signalCompression(), opt.signalCodecOverrides(), List.of(),
             opt.embedReference(), opt.referenceChromSeqs(), null, null,
             opt.optDisableQualitiesV5(), false,
-            opt.readRole(), opt.refDiffSliceBytes());
+            opt.readRole(), opt.refDiffSliceBytes(),
+            List.of(r.tags() == null ? "" : r.tags()));
     }
 }

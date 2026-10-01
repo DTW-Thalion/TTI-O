@@ -149,9 +149,7 @@ public final class DatasetWalker {
             visitor.visitDatasetHeader(this, did, e.getKey(),
                                          grun.acquisitionMode().ordinal(),
                                          "TTIOGenomicRead",
-                                         List.of("sequences", "qualities",
-                                                 "cigar", "read_name",
-                                                 "mate_chromosome"),
+                                         TransportWriter.genomicChannelNames(grun),
                                          TransportWriter.genomicRunMetadataJson(grun),
                                          grun.readCount());
             did++;

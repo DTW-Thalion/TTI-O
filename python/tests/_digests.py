@@ -17,20 +17,33 @@ def _md5_lines(lines) -> str:
     return h.hexdigest()
 
 
-def sam11_md5(path) -> str:
+def sam11_md5(path, *, with_tags: bool = False) -> str:
     """md5 over sorted SAM columns 1-11 of ``samtools view <path>``,
-    RNEXT ``=`` expanded to RNAME."""
+    RNEXT ``=`` expanded to RNAME. ``with_tags`` (M101) adds the
+    optional fields, so the digest covers the whole record."""
     p = subprocess.run(["samtools", "view", str(path)], capture_output=True, text=True, check=True)
     lines = []
     for line in p.stdout.splitlines():
-        c = line.split("\t", 11)[:11]
+        c = line.split("\t", 11)
         if c[6] == "=":
             c[6] = c[2]
+        if not with_tags:
+            c = c[:11]
         lines.append("\t".join(c))
     return _md5_lines(lines)
 
 
-def genomic_run_sam11_md5(run) -> str:
+def sam_full_md5(path) -> str:
+    """md5 over sorted whole SAM records (tags included)."""
+    return sam11_md5(path, with_tags=True)
+
+
+def genomic_run_sam_full_md5(run) -> str:
+    """The whole-record digest computed from a GenomicRun's reads."""
+    return genomic_run_sam11_md5(run, with_tags=True)
+
+
+def genomic_run_sam11_md5(run, *, with_tags: bool = False) -> str:
     """The same digest computed from a GenomicRun's reads."""
     lines = []
     for r in run.iter_reads():
@@ -43,10 +56,13 @@ def genomic_run_sam11_md5(run) -> str:
         else:
             qual = q.decode("latin-1")
         rnext = r.mate_chromosome or "*"
-        lines.append("\t".join([
+        cols = [
             r.read_name or "*", str(int(r.flags)), r.chromosome or "*", str(int(r.position)),
             str(int(r.mapping_quality)), r.cigar or "*", rnext, str(int(r.mate_position)),
-            str(int(r.template_length)), seq, qual]))
+            str(int(r.template_length)), seq, qual]
+        if with_tags and r.tags:
+            cols.append(r.tags)
+        lines.append("\t".join(cols))
     return _md5_lines(lines)
 
 

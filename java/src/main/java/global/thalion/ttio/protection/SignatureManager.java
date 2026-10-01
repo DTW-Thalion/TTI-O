@@ -242,9 +242,11 @@ public final class SignatureManager {
 
     // ────────────────────────────────────────────── M90.2 genomic runs
 
-    /** Channels signed by {@link #signGenomicRun}. */
+    /** Channels signed by {@link #signGenomicRun}. M101: the SAM tags
+     *  channel (a flat uint8 SAM_TAGS stream) is signed with the bases
+     *  it describes, when present. */
     private static final String[] GENOMIC_SIGNAL_CHANNELS = {
-        "sequences", "qualities"
+        "sequences", "qualities", "tags"
     };
     /** Index columns signed by {@link #signGenomicRun}. L1
      *  (Task #82 Phase B.1, 2026-05-01): the M82-era VL-string

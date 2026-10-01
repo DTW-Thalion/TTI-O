@@ -17,6 +17,7 @@
     NSMutableDictionary<NSString *, NSMutableData *> *_off;
     NSMutableDictionary<NSString *, NSMutableData *> *_len;
     NSMutableDictionary<NSString *, NSMutableData *> *_codec;
+    NSArray<NSString *> *_channels;
 }
 
 static BOOL ttioRowNum(NSDictionary *row, NSString *key, unsigned long long *out, NSError **error)
@@ -47,7 +48,15 @@ static BOOL ttioRowNum(NSDictionary *row, NSString *key, unsigned long long *out
 {
     _n = rows.count;
     NSArray *channels = [TTIOGenomicBlocks blockChannels];
+    NSArray *required = [TTIOGenomicBlocks requiredBlockChannels];
     _hasCodecs = _n > 0 && rows[0][[channels[0] stringByAppendingString:@"_codec"]] != nil;
+    // An optional channel's columns are absent from runs that do not
+    // carry it: every block then has an empty range (M101).
+    NSMutableArray<NSString *> *present = [NSMutableArray arrayWithArray:required];
+    for (NSString *ch in [TTIOGenomicBlocks optionalBlockChannels]) {
+        if (_n > 0 && rows[0][[ch stringByAppendingString:@"_off"]] != nil) [present addObject:ch];
+    }
+    _channels = [present copy];
     _readStart = calloc(MAX(_n, (NSUInteger)1), sizeof(unsigned long long));
     _nReads = calloc(MAX(_n, (NSUInteger)1), sizeof(NSUInteger));
     _baseStart = calloc(MAX(_n, (NSUInteger)1), sizeof(unsigned long long));
@@ -68,6 +77,7 @@ static BOOL ttioRowNum(NSDictionary *row, NSString *key, unsigned long long *out
         if (!ttioRowNum(r, @"base_start", &v, error)) return NO; _baseStart[i] = v;
         if (!ttioRowNum(r, @"n_bases", &v, error)) return NO; _nBases[i] = v;
         for (NSString *ch in channels) {
+            if (![_channels containsObject:ch]) continue;
             if (!ttioRowNum(r, [ch stringByAppendingString:@"_off"], &v, error)) return NO;
             ((unsigned long long *)_off[ch].mutableBytes)[i] = v;
             if (!ttioRowNum(r, [ch stringByAppendingString:@"_len"], &v, error)) return NO;
@@ -91,6 +101,8 @@ static BOOL ttioRowNum(NSDictionary *row, NSString *key, unsigned long long *out
 
 - (NSUInteger)count { return _n; }
 - (BOOL)hasCodecs { return _hasCodecs; }
+- (NSArray<NSString *> *)channels { return _channels ?: [TTIOGenomicBlocks requiredBlockChannels]; }
+- (BOOL)hasTags { return [_channels containsObject:@"tags"]; }
 
 - (unsigned long long)readCount
 {

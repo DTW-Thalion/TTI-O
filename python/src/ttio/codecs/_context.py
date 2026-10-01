@@ -54,6 +54,11 @@ class CodecContext:
     # the read that would push it past this many bases. None/0 = the
     # fixed reads_per_slice rule.
     slice_bytes: "int | None" = None
+    # SAM_TAGS (M101): the reference bases per own_chrom_ids value, for
+    # MD/NM derivation. Encode: the list itself (empty or None = no
+    # derivation). Decode: a lazy provider, called once per decode.
+    tag_references: "list[bytes | None] | None" = None
+    tag_references_provider: "Callable[[], list[bytes | None]] | None" = None
 
     @staticmethod
     def empty() -> "CodecContext":

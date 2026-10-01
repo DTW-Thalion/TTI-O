@@ -1864,6 +1864,121 @@ static TTIOCompression task30CompressionForProvider(id<TTIOStorageProvider> p)
     return TTIOCompressionNone;
 }
 
+// ── M101 SAM optional fields ──────────────────────────────────────
+//
+// signal_channels/tags: one flat uint8 dataset, no HDF5 filter,
+// @compression = SAM_TAGS (18) as uint8. Written only when some read
+// carries tags, so tag-less files are unchanged.
+
+/** Encode the run's tags through SAM_TAGS (codec id 18).
+ *
+ *  MD:Z / NM:i are recomputed from the reference only when the
+ *  sequences channel went through REF_DIFF_V2 (`derive`), so a reader
+ *  that can decode the sequences can always decode the tags (binding
+ *  decision 96). REF_DIFF_V2 runs hold one chromosome: reads on it get
+ *  the reference, every other read (unmapped '*') none. */
+static NSData *_TTIO_M101_EncodeTags(TTIOWrittenGenomicRun *run, BOOL derive,
+                                     NSError **error)
+{
+    NSUInteger n = run.cigars.count;
+    if (run.tags.count != n) {
+        if (error) *error = TTIOMakeError(TTIOErrorInvalidArgument,
+            @"WrittenGenomicRun.tags has %lu entries for %lu reads",
+            (unsigned long)run.tags.count, (unsigned long)n);
+        return nil;
+    }
+    NSArray *refs = @[];
+    NSMutableData *chromIds = [NSMutableData dataWithLength:n * sizeof(uint16_t)];
+    uint16_t *cid = (uint16_t *)chromIds.mutableBytes;
+    for (NSUInteger i = 0; i < n; i++) cid[i] = 0xFFFF;
+    if (derive && run.referenceChromSeqs.count > 0) {
+        NSMutableSet<NSString *> *names = [NSMutableSet set];
+        for (NSString *c in run.chromosomes) {
+            if (c.length > 0 && ![c isEqualToString:@"*"]) [names addObject:c];
+        }
+        NSString *only = names.count == 1 ? [names anyObject] : nil;
+        NSData *ref = only ? run.referenceChromSeqs[only] : nil;
+        if (ref != nil) {
+            refs = @[ref];
+            for (NSUInteger i = 0; i < n; i++) {
+                if ([run.chromosomes[i] isEqualToString:only]) cid[i] = 0;
+            }
+        }
+    }
+    NSMutableData *offsets = [NSMutableData dataWithLength:(n + 1) * sizeof(uint64_t)];
+    uint64_t *off = (uint64_t *)offsets.mutableBytes;
+    const uint32_t *lens = (const uint32_t *)run.lengthsData.bytes;
+    for (NSUInteger i = 0; i < n; i++) off[i + 1] = off[i] + (uint64_t)lens[i];
+
+    id<TTIOCodec> c = [TTIOCodecRegistry codecForId:TTIOCompressionSamTags];
+    TTIOCodecContext *ctx = [TTIOCodecContext emptyContext];
+    ctx.sequences = refs.count ? run.sequencesData : nil;
+    ctx.offsets = offsets;
+    NSArray<NSString *> *cigars = run.cigars;
+    ctx.cigarsProvider = ^NSArray<NSString *> *{ return cigars; };
+    ctx.positions = run.positionsData;
+    ctx.ownChromIds = chromIds;
+    ctx.tagReferences = refs;
+    TTIOEncodedChannel *enc =
+        [c encode:[[TTIODecodedStringList alloc] initWithNames:run.tags]
+          context:ctx error:error];
+    if (![enc isKindOfClass:[TTIOEncodedDatasetBytes class]]) return nil;
+    return ((TTIOEncodedDatasetBytes *)enc).bytes;
+}
+
+/** HDF5 fast path: write signal_channels/tags. */
+static BOOL _TTIO_M101_WriteTagsHDF5(TTIOHDF5Group *sc, TTIOWrittenGenomicRun *run,
+                                     NSError **error)
+{
+    BOOL derive = NO;
+    if ([sc hasChildNamed:@"sequences"]) {
+        H5O_info2_t info;
+        memset(&info, 0, sizeof(info));
+        if (H5Oget_info_by_name3([sc groupId], "sequences", &info,
+                                 H5O_INFO_BASIC, H5P_DEFAULT) >= 0
+            && info.type == H5O_TYPE_GROUP) {
+            TTIOHDF5Group *seqGrp = [sc openGroupNamed:@"sequences" error:NULL];
+            derive = [seqGrp hasChildNamed:@"refdiff_v2"];
+        }
+    }
+    NSData *blob = _TTIO_M101_EncodeTags(run, derive, error);
+    if (!blob) return NO;
+    TTIOHDF5Dataset *ds = [sc createDatasetNamed:@"tags"
+                                       precision:TTIOPrecisionUInt8
+                                          length:blob.length
+                                       chunkSize:65536
+                                     compression:TTIOCompressionNone
+                                compressionLevel:0
+                                           error:error];
+    if (!ds) return NO;
+    if (![ds writeData:blob error:error]) return NO;
+    return _TTIO_M86_WriteUInt8Attribute([ds datasetId], "compression",
+                                         (uint8_t)TTIOCompressionSamTags, error);
+}
+
+/** Storage-protocol path: twin of _TTIO_M101_WriteTagsHDF5. */
+static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
+                                        TTIOWrittenGenomicRun *run,
+                                        NSError **error)
+{
+    id<TTIOStorageGroup> seqGrp = [sc openGroupNamed:@"sequences" error:NULL];
+    BOOL derive = seqGrp != nil && [seqGrp hasChildNamed:@"refdiff_v2"];
+    NSData *blob = _TTIO_M101_EncodeTags(run, derive, error);
+    if (!blob) return NO;
+    id<TTIOStorageDataset> ds = [sc createDatasetNamed:@"tags"
+                                             precision:TTIOPrecisionUInt8
+                                                length:blob.length
+                                             chunkSize:65536
+                                           compression:TTIOCompressionNone
+                                      compressionLevel:0
+                                                 error:error];
+    if (!ds) return NO;
+    if (![ds writeAll:blob error:error]) return NO;
+    return [ds setAttributeValue:@((uint8_t)TTIOCompressionSamTags)
+                         forName:@"compression"
+                           error:error];
+}
+
 @interface TTIOSpectralDataset (GenomicWriteStream)
 + (BOOL)_ttio_streamGenomicRun:(TTIOWrittenGenomicRun *)run
                           name:(NSString *)name
@@ -2185,6 +2300,10 @@ static TTIOCompression task30CompressionForProvider(id<TTIOStorageProvider> p)
                            @"$TTIO_NATIVE_LIB_DIR."];
     }
 
+    // M101 — SAM optional fields. A run whose reads carry no tags
+    // writes no tags channel, so tag-less files are unchanged.
+    if ([run hasTags] && !_TTIO_M101_WriteTagsStorage(sc, run, error)) return NO;
+
     return YES;
 }
 
@@ -2358,6 +2477,16 @@ static TTIOCompression task30CompressionForProvider(id<TTIOStorageProvider> p)
         if (hasGenomic) {
             if (![features containsObject:[TTIOFeatureFlags featureOptGenomic]]) {
                 [features addObject:[TTIOFeatureFlags featureOptGenomic]];
+            }
+        }
+        // M101: opt_sam_tags when any genomic run carries SAM optional
+        // fields (a tags channel); tag-less files are unchanged.
+        for (TTIOWrittenGenomicRun *gr in [genomicRuns objectEnumerator]) {
+            if ([gr hasTags]) {
+                if (![features containsObject:[TTIOFeatureFlags featureOptSamTags]]) {
+                    [features addObject:[TTIOFeatureFlags featureOptSamTags]];
+                }
+                break;
             }
         }
         if (![root setAttributeValue:kTTIOFormatVersion
@@ -2693,6 +2822,10 @@ static TTIOCompression task30CompressionForProvider(id<TTIOStorageProvider> p)
                            @"$TTIO_NATIVE_LIB_DIR."];
     }
 
+    // M101 — SAM optional fields. A run whose reads carry no tags
+    // writes no tags channel, so tag-less files are unchanged.
+    if ([run hasTags] && !_TTIO_M101_WriteTagsHDF5(sc, run, error)) return NO;
+
     // Phase 1: per-run provenance compound at <run>/provenance/steps,
     // mirroring the AcquisitionRun MS path. Absent when the
     // WrittenGenomicRun carries no records — preserving pre-Phase-1
@@ -2975,6 +3108,16 @@ static TTIOCompression task30CompressionForProvider(id<TTIOStorageProvider> p)
     if (hasGraphs) {
         if (![features containsObject:[TTIOFeatureFlags featureOptAssemblyGraph]]) {
             [features addObject:[TTIOFeatureFlags featureOptAssemblyGraph]];
+        }
+    }
+    // M101: opt_sam_tags when any genomic run carries SAM optional
+    // fields (a tags channel); tag-less files are unchanged.
+    for (TTIOWrittenGenomicRun *gr in [genomicRuns objectEnumerator]) {
+        if ([gr hasTags]) {
+            if (![features containsObject:[TTIOFeatureFlags featureOptSamTags]]) {
+                [features addObject:[TTIOFeatureFlags featureOptSamTags]];
+            }
+            break;
         }
     }
 

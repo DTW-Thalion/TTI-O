@@ -1,57 +1,72 @@
-# HANDOFF — M99/M99.1 streaming per-AU protection
+# HANDOFF — M101 SAM optional tags
 
-**As of 2026-08-25.** M99 makes per-AU protection cover what the
-genomic write path actually produces: `encrypt_per_au` raised
-`KeyError` on any run in the default `blocks_v1` layout, so nothing
-written by the current genomic writers could be encrypted at all.
-The walkers in all 3 SDKs now stream `blocks_v1` runs block by block
-(format-spec §9.1.1, binding decisions §93–§95), which also removes
-the whole-channel memory ceiling: peak RSS follows the block policy
-(64 MB default), not the channel size. Phase 0 proved per-block
-re-encode byte-determinism and the AU arithmetic on probes before
-any implementation. M99.1 hardens the restore contract — writer
-policy and the reference set persist as run attrs, the encrypt-time
-gate is gone, restore falls back to an index rewrite — and carries
-`blocks_v1` runs on the encrypted transport stream via the
-transport-spec v0.12 sidecar packets. Branch:
-`m99-streaming-per-au`.
+**As of 2026-10-01.** M101 closes the first gap on WORKPLAN's
+"Take these first" list. The BAM, SAM and CRAM importers kept SAM
+fields 1–11 and discarded the optional tags in all three SDKs, so a
+`.tio` made from a BAM was not a lossless copy of it. The tags now ride
+a genomic `tags` channel coded with SAM_TAGS (codec id 18), a CRAM-style
+column codec in the shared native library:
+
+- a tag-line dictionary per blob, and one column per tag key;
+- MD:Z / NM:i recomputed from the reference;
+- repeated integers stored as back-references.
+
+Phase 0 proved it on the GIAB HG002 2x250 chr22 slice before any SDK
+code: 1.93 B/read against 2.57 for CRAM 3.1 `small`, byte-exact over
+10.6 M reads. (The Phase 0 CRAM baseline first read 5.61 B/read: its
+chr22-only reference made samtools embed a reference built from the
+reads and keep MD/NM. Corrected 2026-10-01. On bwa-aligned NA12878 WES
+CRAM is ahead on tags, 1.27 against 3.24 B/read, because of `XA:Z`.) Format-spec §10.13, `docs/codecs/sam_tags.md`, binding
+decisions §96–§100. Branch: `m101-sam-optional-tags`.
 
 | Task | Scope | Status | Spec proof |
 |---|---|---|---|
-| **Phase 0** | Probes: `encrypt_per_au` raises on blocks_v1; per-block re-encode is byte-deterministic across all channels and codecs (REF_DIFF_V2 included) under the sticky qualities discipline; per-block decode + global-AU GCM round-trips 10,000/10,000 AUs incl. zero-length reads | ✅ 2026-08-25 (design-docs spec note + probes) | required before the walker design froze |
-| **A Python** | Block-streaming encrypt walker (per-block decode → per-read AUs, global numbering, extendable segments append, restorability verified per block before any deletion) + block-streaming decrypt-in-place (per-block segment-row reads, re-encode, byte-identity restore, index untouched); `au_base`/`offset_base` plumbing; RSS-bound test: 0.0 MB peak growth over ~104 MB of decoded channels | ✅ 8 tests | — |
-| **B ObjC** | Mirror walkers in `TTIOPerAUFile`; `TTIOCompoundIO` extendable compounds gain VL fields + ranged reads; `TTIOPerAUEncryption` auBase/offsetBase; `TTIOBlockView` skipChannels | ✅ 58 M99 assertions incl. the send guard | — |
-| **C Java** | Mirror walkers in `PerAUFile`; `Hdf5CompoundIO` VL extendable append + `readCompoundFullRange` (explicit memory spaces — H5S_ALL with a hyperslab file selection overruns the compact buffer); `VlBytesFFM` memory-space overloads; compound adapter `readSlice` hyperslab; `BlockTable`/`BlockView` public walker surface | ✅ 6 tests | — |
-| **D Conformance** | 3×3 encryptor × decryptor matrix over stream-written blocks_v1 fixtures (cross-chromosome mates + zero-length reads; embedded-reference REF_DIFF_V2), byte-identical blobs + index in every cell (`tests/validation/test_m99_blocks_v1_matrix.py`) | ✅ 18/18 cells | — |
-| **E Transport guard** | A `.tis` stream of a blocks_v1 per-AU container receives to a file decrypt-in-place cannot restore (the stream does not carry the blocks_v1 sidecars); all three senders now refuse with a clear error | ✅ ×3, superseded by I | wire extension deferred (own Phase 0) |
-| **F Docs** | format-spec §9.1.1, binding decisions §93–§95, CHANGELOG, cross-language-matrix row, this file | ✅ | — |
-| **G M99.1 policy persist + fallback** | Writers persist `@ref_diff_slice_bytes` / `@opt_disable_qualities_v5` when non-default, walkers honour them, the encrypt-time re-encode/byte-compare gate is removed ×3 SDKs, and restore rewrites `blocks/index` when a re-encoded blob misses its recorded ranges instead of refusing | ✅ ×3 SDKs, policy + fallback tests each | — |
-| **H M99.1 reference_md5s** | Writers persist `@reference_md5s` (chromosome → hex reference-set digest) for REF_DIFF_V2 runs; restore rebuilds `reference_chrom_seqs` through the reference resolver (embedded or `REF_PATH`), so `embed_reference=False` runs encrypt and restore | ✅ ×3 SDKs, unembedded 2-chromosome REF_PATH round trips | digest = the blob-header md5 the resolver verifies |
-| **I M99.1 transport sidecars** | Transport-spec v0.12: `GenomicRunSidecar` (0x1C) + `BlockSidecar` (0x1D) + required `transport_blocks_v1` feature token; senders emit instead of refusing, receivers rebuild the blocks_v1 shape, decrypt-in-place on the received container is byte-identical | ✅ ×3 SDKs + 3×3 send × receive matrix (27/27 with the per-AU plane) | Phase 0 Python prototype + spec §4.24 before ObjC/Java |
+| **Phase 0** | Prototype column codec (`tools/prototypes/m101_sam_tags/`) over the HG002 chr22 slice; CRAM 3.1 normal/small baselines via `samtools cram-size`; entropy check of the integer columns; O0-only vs O0+O1 | ✅ 2026-10-01 | required before the codec design froze |
+| **Native kernel** | `native/src/sam_tags.{c,h}`, `ttio_sam_tags_encode/_decode/_free` in `ttio_rans.h`. rANS-O0 substreams with a sparse codec-4 table. `test_sam_tags` passes under ASan/UBSan: calmd cases, canonical ints, every-prefix and trailing-byte rejection, determinism | ✅ | wire spec written first |
+| **A Python** | `codecs/sam_tags.py` + registry adapter, `WrittenGenomicRun.tags`, `AlignedRead.tags`, BAM/SAM/CRAM import, whole-run writer, blocks_v1 writer, index triple and late upgrade, readers, exporters, `opt_sam_tags`, per-AU walkers, signatures, plaintext and encrypted transport, `bam_dump` `tags` key | ✅ `test_m101_sam_tags.py` 12 + `test_sam_tags_native.py` 5 | — |
+| **B ObjC** | Mirror A: `TTIOSamTags` over the kernel, `TTIOBamReader` keeps `fp[11]`, writer/reader/exporter/per-AU/transport/signatures, `TtioBamDump` `tags` | ✅ `TestM101SamTags` 76 checks | — |
+| **C Java** | Mirror A: JNI entry points, `BamReader.addRecord` formats `getAttributes()` as samtools text (float and `B` arrays included), `WrittenGenomicRun.tags` record component, writer/reader/`BamWriter`/per-AU/transport/signatures, `BamDump` `tags` | ✅ `M101SamTagsTest` 17 tests | `SamTagText` matches `samtools view` on every tag type and a seeded float sweep (`%g`, half-even on the exact binary value) |
+| **D Conformance** | 3×3 writer × reader matrix over a tagged fixture (REF_DIFF with derivation, no reference, tags first appearing in a later block), `bam_dump` cross-language JSON over a tagged SAM fixture, per-AU encryptor × decryptor cells | ✅ `test_m101_sam_tags_matrix.py` 29/29 | — |
+| **E Release + re-measure** | WORKPLAN item 2: cut the release and re-measure NA12878 WES chr22, HG002 chr22 and whole HG002 against CRAM 3.1 | chr22 slices ✅ (`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`: WES 44.7 MB vs CRAM small 33.3 MB, HG002 chr22 1,020.5 MB vs 834.6 MB); whole HG002 and the release ⏳ | CRAM reference must cover every header contig |
+| **F Docs** | format-spec §10.4 row 18, §10.12.2 triple, §10.12.6, §10.13; codec doc; feature-flags; transport-spec 4.3.1 / 4.24; genomic-runs; vendor-formats; binding decisions §96–§100; CHANGELOG; this file | ✅ | — |
 
-Restore contract (M99.1): decrypt-in-place re-encodes each block
-through the block writer, replicating the stream writer's sticky
-qualities strategy (block 0 auto-tunes, the winner read back from
-the encoded stream pins the rest) and honouring the persisted policy
-attrs, and appends the blobs into recreated channel datasets. When
-every blob lands on the recorded ranges the index is untouched and
-the restore is byte-identical; otherwise the index is rewritten to
-the ranges actually written and the file stays consistent and
-readable. REF_DIFF_V2 references resolve from `/study/references/`
-or `REF_PATH` via `@reference_md5s`.
+**Fidelity contract:** decode returns each read's tag text exactly as
+the importer saw it. Two limits on that:
 
-Known limits, deliberate: the MS (codec-17) and assembly-graph
-per-AU paths stay whole-channel (FDZ1 per-block streaming and graph
-channel framing are separable follow-ups; the graph case is a wire
-change); the encrypted stream does not carry embedded reference
-bytes, so a received REF_DIFF container restores via `REF_PATH`;
-pre-v0.12 receivers skip the sidecar packets and rebuild an
-unrestorable legacy-shaped container, detectable only through the
-`transport_blocks_v1` feature token.
+- **BAM integer widths are not kept.** `samtools view` prints every
+  integer type as `i`, so the width is chosen again when a BAM is
+  written.
+- **MD/NM are recomputed only in REF_DIFF_V2 blocks.** There the reader
+  already needs the reference. Every other block stores them like any
+  other tag.
 
-Suite state at handoff (post-M99.1): Python 2714 pass 0 fail; ObjC
-5340 pass / 3 known-environmental TestM90Final failures; Java 1644
-tests 0 failures 18 skipped.
+**Known limits, deliberate:**
+
+- **Whole-channel runs with tags refuse per-AU and region encryption**
+  rather than leave MD strings in plaintext; rewrite them as blocks_v1.
+- **No MD transform without a reference.** Without a reference, MD costs
+  5.1 B/read, above CRAM's bzip2 column; an MD-specific transform is a
+  follow-up.
+- **Java CRAM tags are tag-sorted.** htsjdk's CRAM records have neither
+  aux bytes nor text, so Java takes their tags from the tag-sorted
+  attribute map; Java BAM export writes `H` tags as `Z`.
+- **Encrypted transport carries no reference bytes.** It does not carry
+  embedded reference bytes, so a received tagged REF_DIFF container
+  restores through `REF_PATH` (the M99.1 limit).
+
+**Suite state at handoff (M101):**
+
+- **Python:** 2312 pass, 0 M101 failures.
+- **ObjC:** 5374 pass, 0 fail.
+- **Java:** 1664 tests, 0 failures, 18 skipped.
+- **Cross-language matrices** (M82–M101, run from a space-free mirror):
+  343 pass.
+
+**Local environment:** the Python suite runs under WSL Ubuntu, with
+venv `~/ttio-venv` and a Linux build of `native/`
+(`TTIO_RANS_LIB_PATH`). The Windows Python build lacks zlib and the
+MinGW runtime. `scripts/setup-objc-wsl.sh` installs the ObjC
+toolchain the way CI does (needs sudo).
 
 ---
 
@@ -59,7 +74,7 @@ tests 0 failures 18 skipped.
 
 This `HANDOFF.md` is replaced *per active milestone* — the git
 history (`git log -- HANDOFF.md`) shows that pattern (M81 →
-M82 → … → M98 → this). When the next multi-language milestone kicks
+M82 → … → M99 → this). When the next multi-language milestone kicks
 off, overwrite this file with the milestone's plan + task table;
 otherwise small post-v1.0 follow-ups go to PRs + CHANGELOG only.
 
@@ -67,6 +82,6 @@ For ongoing work not coordinated through HANDOFF, see:
 
 - `CHANGELOG.md` § `[Unreleased]` — what's landed since the last
   tag.
-- `WORKPLAN.md` — milestone history + binding decisions (§93–§95
-  are M99's).
+- `WORKPLAN.md` — milestone history + binding decisions (§96–§100
+  are M101's).
 - `tti-workbench-server` repository — daemon-side workstreams.

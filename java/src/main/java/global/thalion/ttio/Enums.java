@@ -164,7 +164,17 @@ public final class Enums {
          * {@code Compression.FLOAT_DELTA_ZSTD} and ObjC
          * {@code TTIOCompressionFloatDeltaZstd}.
          */
-        FLOAT_DELTA_ZSTD
+        FLOAT_DELTA_ZSTD,
+        /**
+         * SAM optional fields (codec id 18, M101): a tag-line
+         * dictionary plus one column per tag key, MD:Z / NM:i
+         * recomputed from the reference. The genomic {@code tags}
+         * channel's only codec (docs/codecs/sam_tags.md).
+         * Cross-language ordinal {@code = 18} matches Python
+         * {@code Compression.SAM_TAGS} and ObjC
+         * {@code TTIOCompressionSamTags}.
+         */
+        SAM_TAGS
     }
 
     /** Ion polarity for mass spectrometry. */

@@ -9,6 +9,7 @@ import global.thalion.ttio.codecs.NameTokenizerV2;
 import global.thalion.ttio.codecs.Quality;
 import global.thalion.ttio.codecs.Rans;
 import global.thalion.ttio.codecs.RefDiffV2;
+import global.thalion.ttio.codecs.SamTags;
 import java.util.EnumMap;
 import java.util.Map;
 
@@ -198,6 +199,47 @@ public final class CodecRegistry {
         }
     }
 
+    /** SAM_TAGS (M101): per-read tag text. MD/NM derivation needs the
+     *  reads' sequences, CIGARs, positions and chromosome ids plus the
+     *  reference bases; without tag references none of that is read. */
+    static final class SamTagsCodec implements Codec {
+        public Compression id() { return Compression.SAM_TAGS; }
+        public boolean isContextAware() { return true; }
+        public boolean needsEmbeddedReference() { return false; }
+
+        private static boolean anyRef(java.util.List<byte[]> refs) {
+            if (refs == null) return false;
+            for (byte[] r : refs) if (r != null) return true;
+            return false;
+        }
+
+        public DecodedChannel decode(ChannelPayload p, CodecContext ctx) {
+            int n = ctx.readCount() != null ? ctx.readCount() : 0;
+            java.util.List<byte[]> refs = ctx.tagReferencesProvider() != null
+                ? ctx.tagReferencesProvider().get() : null;
+            SamTags.Context tc = SamTags.Context.none();
+            if (anyRef(refs)) {
+                long[] off = new long[n + 1];
+                for (int i = 0; i < n; i++) off[i + 1] = off[i] + ctx.readLengths()[i];
+                tc = new SamTags.Context(ctx.sequencesProvider().get(), off,
+                    java.util.Arrays.asList(ctx.cigarsProvider().get()),
+                    ctx.positions(), ctx.ownChromIds(), refs);
+            }
+            return new DecodedChannel.StrList(SamTags.decode(payloadBytes(p), n, tc));
+        }
+
+        public EncodedChannel encode(DecodedChannel v, CodecContext ctx) {
+            SamTags.Context tc = SamTags.Context.none();
+            if (anyRef(ctx.tagReferences())) {
+                tc = new SamTags.Context(ctx.sequences(), ctx.offsets(),
+                    java.util.Arrays.asList(ctx.cigarsProvider().get()),
+                    ctx.positions(), ctx.ownChromIds(), ctx.tagReferences());
+            }
+            return new EncodedChannel.DatasetBytes(
+                SamTags.encode(((DecodedChannel.StrList) v).names(), tc));
+        }
+    }
+
     private static Map<Compression, Codec> build() {
         EnumMap<Compression, Codec> m = new EnumMap<>(Compression.class);
         m.put(Compression.RANS_ORDER0, new RansCodec(Compression.RANS_ORDER0, 0));
@@ -209,6 +251,7 @@ public final class CodecRegistry {
         m.put(Compression.FQZCOMP_NX16_Z, new FqzcompCodec());
         m.put(Compression.MATE_INLINE_V2, new MateInfoCodec());
         m.put(Compression.REF_DIFF_V2, new RefDiffCodec());
+        m.put(Compression.SAM_TAGS, new SamTagsCodec());
         return m;
     }
 }

@@ -25,6 +25,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) unsigned long long readCount;
 /** YES when the index carries the <code>&lt;ch&gt;_codec</code> columns. */
 @property (nonatomic, readonly) BOOL hasCodecs;
+/** The channels whose columns the index carries: the required five,
+ *  plus <code>tags</code> when the run has the tags triple (M101).
+ *  An optional channel the index lacks reads as empty ranges. */
+@property (nonatomic, readonly, copy) NSArray<NSString *> *channels;
+/** YES when the index carries the tags (off, len, codec) triple. */
+@property (nonatomic, readonly) BOOL hasTags;
 
 - (unsigned long long)readStartAt:(NSUInteger)block;
 - (NSUInteger)nReadsAt:(NSUInteger)block;

@@ -56,10 +56,29 @@ INDEX_FIELDS: list[CompoundField] = (
      CompoundField("base_start", CompoundFieldKind.UINT64),
      CompoundField("n_bases", CompoundFieldKind.UINT64)]
     + [CompoundField(f"{ch}_{k}", CompoundFieldKind.UINT64)
-       for ch in _blocks.BLOCK_CHANNELS for k in ("off", "len")]
+       for ch in _blocks.REQUIRED_BLOCK_CHANNELS for k in ("off", "len")]
     + [CompoundField(f"{ch}_codec", CompoundFieldKind.UINT32)
-       for ch in _blocks.BLOCK_CHANNELS]
+       for ch in _blocks.REQUIRED_BLOCK_CHANNELS]
 )
+#: The schema of a run that carries the tags channel (M101): the
+#: tags (off, len, codec) triple follows the required columns.
+INDEX_FIELDS_WITH_TAGS: list[CompoundField] = INDEX_FIELDS + [
+    CompoundField("tags_off", CompoundFieldKind.UINT64),
+    CompoundField("tags_len", CompoundFieldKind.UINT64),
+    CompoundField("tags_codec", CompoundFieldKind.UINT32),
+]
+
+
+def index_fields_for(rows_or_channels) -> list[CompoundField]:
+    """The index schema for a run: with the tags triple when the given
+    index rows (dicts) carry ``tags_off``, or the channel names include
+    ``tags``."""
+    items = list(rows_or_channels)
+    if items and isinstance(items[0], dict):
+        has = "tags_off" in items[0]
+    else:
+        has = "tags" in items
+    return INDEX_FIELDS_WITH_TAGS if has else INDEX_FIELDS
 
 _INDEX_ARRAYS = (
     ("lengths", Precision.UINT32, np.uint32),
@@ -151,6 +170,7 @@ class GenomicStreamWriter:
         self._read_count = 0
         self._base_count = 0
         self._block_count = 0
+        self._with_tags = False   # the index carries the tags columns (M101)
         # Per-run sticky qualities strategy: block 0 auto-tunes, the
         # winner is pinned for the rest of the run.
         self._qual_hint = -1
@@ -326,9 +346,13 @@ class GenomicStreamWriter:
 
     def _write_encoded(self, block: WrittenGenomicRun, blobs: _blocks.BlockBlobs) -> None:
         self._ensure_layout(blobs)
+        if blobs.blobs.get("tags") and not self._with_tags:
+            self._add_tags_columns()
         row = {"read_start": self._read_count, "n_reads": blobs.n_reads,
                "base_start": self._base_count, "n_bases": blobs.n_bases}
         for ch in _blocks.BLOCK_CHANNELS:
+            if ch == "tags" and not self._with_tags:
+                continue
             data = blobs.blobs[ch]
             ds = self._ds.get(ch)
             row[f"{ch}_codec"] = int(blobs.compression[ch])
@@ -459,8 +483,10 @@ class GenomicStreamWriter:
                 json.dumps({c: md5.hex() for c in sorted(seqs)},
                            separators=(",", ":")))
         blocks = rg.create_group("blocks")
+        self._with_tags = bool(blobs is not None and blobs.blobs.get("tags"))
         self._index = blocks.create_compound_dataset(
-            "index", INDEX_FIELDS, 0, extendable=True, chunk_rows=1024)
+            "index", INDEX_FIELDS_WITH_TAGS if self._with_tags else INDEX_FIELDS,
+            0, extendable=True, chunk_rows=1024)
         idx_group = rg.create_group("genomic_index")
         for name, prec, _ in _INDEX_ARRAYS:
             self._idx[name] = idx_group.create_dataset(
@@ -468,6 +494,20 @@ class GenomicStreamWriter:
                 compression=Compression.ZLIB, compression_level=6, extendable=True)
         rg.create_group("signal_channels")
         self._rg = rg
+
+    def _add_tags_columns(self) -> None:
+        """The first block with tags arrives after blocks without: give
+        the index the tags columns, the earlier blocks an empty range."""
+        blocks = self._rg.open_group("blocks")
+        rows = self._index.read_rows() if self._block_count else []
+        for row in rows:
+            row.update(tags_off=0, tags_len=0, tags_codec=0)
+        blocks.delete_child("index")
+        self._index = blocks.create_compound_dataset(
+            "index", INDEX_FIELDS_WITH_TAGS, 0, extendable=True, chunk_rows=1024)
+        if rows:
+            self._index.append(rows)
+        self._with_tags = True
 
     def _create_channel(self, ch: str, blobs: _blocks.BlockBlobs):
         sc = self._rg.open_group("signal_channels")
@@ -566,4 +606,5 @@ def _single_read_run(read, meta: dict) -> WrittenGenomicRun:
         mate_positions=np.array([int(read.mate_position)], dtype=np.int64),
         template_lengths=np.array([int(read.template_length)], dtype=np.int32),
         chromosomes=[read.chromosome],
+        tags=[getattr(read, "tags", "") or ""],
     )

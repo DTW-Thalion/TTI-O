@@ -9,7 +9,7 @@ from typing import Protocol
 
 from ..enums import Compression
 from . import base_pack, delta_rans, quality, rans
-from . import fqzcomp_nx16_z, mate_info_v2, name_tokenizer_v2, ref_diff_v2
+from . import fqzcomp_nx16_z, mate_info_v2, name_tokenizer_v2, ref_diff_v2, sam_tags
 from ._context import ChannelPayload, CodecContext, DecodedChannel, EncodedChannel
 
 
@@ -215,6 +215,39 @@ class _RefDiffV2Codec:
         return EncodedChannel.of_group({"refdiff_v2": blob}, {})
 
 
+class _SamTagsCodec:
+    """SAM_TAGS (M101): per-read tag text. MD/NM derivation needs the
+    reads' sequences, CIGARs, positions and chromosome ids plus the
+    reference bases; without ``tag_references`` none of that is read."""
+    id = Compression.SAM_TAGS
+    is_context_aware = True
+    # Derivation reuses the reference REF_DIFF_V2 already requires; the
+    # codec never makes a writer embed one (binding decision §98).
+    needs_embedded_reference = False
+
+    def decode(self, payload, ctx):
+        import numpy as _np
+        n = int(ctx.read_count or 0)
+        refs = ctx.tag_references_provider() if ctx.tag_references_provider else None
+        kw = {}
+        if refs and any(r is not None for r in refs):
+            lens = _np.asarray(ctx.read_lengths, dtype=_np.uint64)
+            off = _np.zeros(n + 1, dtype=_np.uint64)
+            _np.cumsum(lens, out=off[1:])
+            kw = dict(sequences=ctx.sequences_provider(), seq_offsets=off,
+                      cigars=ctx.cigars_provider(), positions=ctx.positions,
+                      chrom_ids=ctx.own_chrom_ids, references=refs)
+        return DecodedChannel.of_str_list(sam_tags.decode(payload.as_bytes(), n, **kw))
+
+    def encode(self, value, ctx):
+        kw = {}
+        if ctx.tag_references and any(r is not None for r in ctx.tag_references):
+            kw = dict(sequences=ctx.sequences, seq_offsets=ctx.offsets,
+                      cigars=ctx.cigar_strings, positions=ctx.positions,
+                      chrom_ids=ctx.own_chrom_ids, references=ctx.tag_references)
+        return EncodedChannel.of_dataset(sam_tags.encode(value.as_str_list(), **kw))
+
+
 CODEC_REGISTRY: "dict[Compression, Codec]" = {
     Compression.RANS_ORDER0: _RansCodec(Compression.RANS_ORDER0, 0),
     Compression.RANS_ORDER1: _RansCodec(Compression.RANS_ORDER1, 1),
@@ -225,4 +258,5 @@ CODEC_REGISTRY: "dict[Compression, Codec]" = {
     Compression.FQZCOMP_NX16_Z: _FqzcompNx16ZCodec(),
     Compression.MATE_INLINE_V2: _MateInlineV2Codec(),
     Compression.REF_DIFF_V2: _RefDiffV2Codec(),
+    Compression.SAM_TAGS: _SamTagsCodec(),
 }

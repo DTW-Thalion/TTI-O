@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterator, Optional, TYPE_CHECKING
 
+from ._common import genomic_channel_names
 from .codec import _iter_genomic_run_access_units, _spectrum_to_access_unit
 from .filters import AUFilter
 from .packets import AccessUnit
@@ -280,8 +281,7 @@ def walk_dataset(
             name=name,
             acquisition_mode=int(grun.acquisition_mode),
             spectrum_class="TTIOGenomicRead",
-            channel_names=["sequences", "qualities",
-                           "cigar", "read_name", "mate_chromosome"],
+            channel_names=genomic_channel_names(grun),
             instrument_json=_genomic_run_metadata_json(grun),
             expected_au_count=len(grun),
         )

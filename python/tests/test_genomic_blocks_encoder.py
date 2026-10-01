@@ -44,7 +44,7 @@ def test_encode_block_equals_whole_run_writer_bytes():
     root = prov.root_group()
     _write_genomic_run(root, "r", ref)
     sc = root.open_group("r").open_group("signal_channels")
-    for ch in _blocks.BLOCK_CHANNELS:
+    for ch in _blocks.REQUIRED_BLOCK_CHANNELS:      # the fixture carries no tags
         ds = _open_channel(sc, ch, blobs.seq_layout)
         assert bytes(np.asarray(ds.read(), dtype=np.uint8).tobytes()) == blobs.blobs[ch], ch
         assert int(ds.get_attribute("compression")) == blobs.compression[ch], ch

@@ -80,6 +80,9 @@ def dump(
         "sequences_md5": seq_md5,
         "qualities_md5": qual_md5,
         "provenance_count": len(run.provenance_records),
+        # M101: the SAM optional fields of each read, as samtools
+        # prints them ("" when a read has none).
+        "tags": list(run.tags) if run.tags is not None else [""] * len(run.read_names),
     }
 
 

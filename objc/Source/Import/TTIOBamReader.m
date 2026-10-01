@@ -156,6 +156,7 @@ const NSUInteger TTIOBamReaderDefaultBatchReads = 100000;
     NSMutableArray<NSString *> *_chromosomes;
     NSMutableArray<NSString *> *_cigars;
     NSMutableArray<NSString *> *_mateChromosomes;
+    NSMutableArray<NSString *> *_tags;     // M101: columns 12+, "" for none
     NSMutableData *_positionsData;
     NSMutableData *_mappingQualitiesData;
     NSMutableData *_flagsData;
@@ -187,6 +188,7 @@ const NSUInteger TTIOBamReaderDefaultBatchReads = 100000;
     _chromosomes = [NSMutableArray array];
     _cigars = [NSMutableArray array];
     _mateChromosomes = [NSMutableArray array];
+    _tags = [NSMutableArray array];
     _positionsData = [NSMutableData data];
     _mappingQualitiesData = [NSMutableData data];
     _flagsData = [NSMutableData data];
@@ -220,8 +222,9 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
  * twelve more with characterAtIndex: per character, and copied SEQ and
  * QUAL into their own NSData before appending them. That is about
  * sixteen objects and a message send per byte for every read. This
- * walks the record once, keeps only the four fields that are stored as
- * text, and appends SEQ and QUAL straight from the slice. */
+ * walks the record once, keeps only the fields that are stored as
+ * text (M101: the optional tags too), and appends SEQ and QUAL
+ * straight from the slice. */
 - (BOOL)consumeLineBytes:(const uint8_t *)line length:(NSUInteger)len
                   lineNo:(NSUInteger)lineNo error:(NSError **)error
 {
@@ -264,7 +267,13 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
                                              encoding:NSUTF8StringEncoding];
     NSString *cigar = [[NSString alloc] initWithBytes:fp[5] length:fn[5]
                                              encoding:NSUTF8StringEncoding];
-    if (qname == nil || rname == nil || cigar == nil) {
+    /* M101: the optional fields, kept as their tab-joined text. */
+    NSString *tags = @"";
+    if (nf > 11 && fn[11] > 0) {
+        tags = [[NSString alloc] initWithBytes:fp[11] length:fn[11]
+                                      encoding:NSUTF8StringEncoding];
+    }
+    if (qname == nil || rname == nil || cigar == nil || tags == nil) {
         if (error) *error = TTIOMakeError(TTIOErrorDatasetRead,
             @"samtools output not valid UTF-8 for %@ (line %lu)",
             @"this file", (unsigned long)lineNo);
@@ -312,6 +321,7 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
     [_chromosomes addObject:rname];
     [_cigars addObject:cigar];
     [_mateChromosomes addObject:expandedRnext];
+    [_tags addObject:tags];
     [_positionsData appendBytes:&pos length:sizeof(int64_t)];
     [_flagsData appendBytes:&flag length:sizeof(uint32_t)];
     [_mappingQualitiesData appendBytes:&mapq length:sizeof(uint8_t)];
@@ -372,8 +382,8 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
         return YES;
     }
 
-    // Alignment record. Per Gotcha §152, parse only fields 1-11
-    // and discard trailing optional tags.
+    // Alignment record: fields 1-11, then the optional tags (M101)
+    // kept as their tab-joined text in cols[11].
     NSArray<NSString *> *cols = bamSplitTabsLimited(line, 12);
     if (cols.count < 11) {
         if (error) *error = TTIOMakeError(TTIOErrorDatasetRead,
@@ -409,6 +419,7 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
     [_chromosomes addObject:rname];
     [_cigars addObject:cigar];
     [_mateChromosomes addObject:expandedRnext];
+    [_tags addObject:(cols.count > 11 ? cols[11] : @"")];
     [_positionsData appendBytes:&pos length:sizeof(int64_t)];
     [_flagsData appendBytes:&flag length:sizeof(uint32_t)];
     [_mappingQualitiesData appendBytes:&mapq length:sizeof(uint8_t)];
@@ -488,6 +499,7 @@ static int64_t bamFieldInt(const uint8_t *p, NSUInteger n)
                 templateLengths:_templateLengthsData
                     chromosomes:_chromosomes
               signalCompression:TTIOCompressionZlib];
+    run.tags = _tags;
     [self _reset];
     return run;
 }

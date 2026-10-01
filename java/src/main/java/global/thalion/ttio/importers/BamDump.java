@@ -104,6 +104,10 @@ public final class BamDump {
         payload.put("sequences_md5", md5Hex(run.sequences()));
         payload.put("qualities_md5", md5Hex(run.qualities()));
         payload.put("provenance_count", reader.lastProvenance().size());
+        // M101: the SAM optional fields of each read, as samtools
+        // prints them ("" when a read has none).
+        payload.put("tags", run.tags() != null ? run.tags()
+            : java.util.Collections.nCopies(run.readNames().size(), ""));
 
         StringBuilder sb = new StringBuilder(4096);
         writeJson(sb, payload, 0);
@@ -243,7 +247,7 @@ public final class BamDump {
                 case '\r': sb.append("\\r"); break;
                 case '\t': sb.append("\\t"); break;
                 default:
-                    if (c < 0x20 || c > 0x7E) {
+                    if (c < 0x20 || c > 0x7F) {
                         sb.append(String.format("\\u%04x", (int) c));
                     } else {
                         sb.append(c);

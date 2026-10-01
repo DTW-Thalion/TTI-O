@@ -257,7 +257,7 @@ int main(int argc, const char *argv[])
         //   mate_chromosomes, mate_positions, name, platform,
         //   positions, provenance_count, qualities_md5, read_count,
         //   read_names, reference_uri, sample_name, sequences_md5,
-        //   template_lengths
+        //   tags, template_lengths
         NSMutableString *out = [NSMutableString string];
         [out appendString:@"{\n"];
 
@@ -341,6 +341,18 @@ int main(int argc, const char *argv[])
 
         // sequences_md5
         bdAppendKeyString(out, @"sequences_md5", seqMd5, 1, YES);
+
+        // tags — M101: the SAM optional fields of each read, as
+        // samtools prints them ("" when a read has none).
+        NSMutableArray<NSString *> *tags = [NSMutableArray arrayWithCapacity:n];
+        for (NSUInteger i = 0; i < n; i++) {
+            [tags addObject:(i < run.tags.count ? run.tags[i] : @"")];
+        }
+        [out appendString:bdIndent(1)];
+        bdAppendJsonString(out, @"tags");
+        [out appendString:@": "];
+        bdAppendStringArray(out, tags, 1);
+        [out appendString:@",\n"];
 
         // template_lengths (last — no trailing comma after value array)
         [out appendString:bdIndent(1)];

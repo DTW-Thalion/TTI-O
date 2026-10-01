@@ -211,7 +211,9 @@ def verify_provenance(run_group: h5py.Group, key: bytes) -> bool:
 # that the existing canonical-bytes API doesn't yet cover for VL string
 # rows.
 
-_GENOMIC_SIGNAL_CHANNELS = ("sequences", "qualities")
+# M101: the SAM tags channel (a flat uint8 SAM_TAGS stream) is signed
+# with the bases it describes, when present.
+_GENOMIC_SIGNAL_CHANNELS = ("sequences", "qualities", "tags")
 # L1 (Task #82 Phase B.1, 2026-05-01): the M82-era VL-string
 # `chromosomes` compound was replaced with a `chromosome_ids` (uint16)
 # + `chromosome_names` (VL-compound) pair, eliminating 42 MB of HDF5

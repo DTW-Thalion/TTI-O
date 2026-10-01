@@ -378,4 +378,42 @@ public final class TtioRansNative {
      * @throws RuntimeException on native error (rc != 0)
      */
     public static native String[] decodeNameTokV2Native(byte[] blob);
+
+    /**
+     * Encode per-read SAM tag text to a SAM_TAGS (codec id 18, M101)
+     * blob. Text arrays are UTF-8 bytes plus {@code n + 1} offsets;
+     * {@code refs} null (or all-null) disables MD/NM derivation and the
+     * other context arrays may then be null. See {@link SamTags}.
+     */
+    public static byte[] encodeSamTags(
+            byte[] tags, long[] tagOffsets,
+            byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+            long[] positions, short[] chromIds, byte[][] refs) {
+        if (!LOADED) throw new IllegalStateException("libttio_rans_jni not loaded");
+        return encodeSamTagsNative(tags, tagOffsets, sequences, seqOffsets,
+                                   cigars, cigarOffsets, positions, chromIds, refs);
+    }
+
+    /**
+     * Decode a SAM_TAGS blob (same context as {@link #encodeSamTags}).
+     * @return Object[2]: byte[] UTF-8 text, long[] offsets (n + 1)
+     */
+    public static Object[] decodeSamTags(
+            byte[] encoded, int nReads,
+            byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+            long[] positions, short[] chromIds, byte[][] refs) {
+        if (!LOADED) throw new IllegalStateException("libttio_rans_jni not loaded");
+        return decodeSamTagsNative(encoded, nReads, sequences, seqOffsets,
+                                   cigars, cigarOffsets, positions, chromIds, refs);
+    }
+
+    private static native byte[] encodeSamTagsNative(
+        byte[] tags, long[] tagOffsets,
+        byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+        long[] positions, short[] chromIds, byte[][] refs);
+
+    private static native Object[] decodeSamTagsNative(
+        byte[] encoded, int nReads,
+        byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+        long[] positions, short[] chromIds, byte[][] refs);
 }

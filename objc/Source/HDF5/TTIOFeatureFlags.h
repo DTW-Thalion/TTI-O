@@ -98,6 +98,11 @@
  *          format-spec 11a). */
 + (NSString *)featureOptAssemblyGraph;
 
+/** @return <code>@"opt_sam_tags"</code> — a genomic run carries SAM
+ *          optional fields as a <code>signal_channels/tags</code>
+ *          channel (M101, codec SAM_TAGS). */
++ (NSString *)featureOptSamTags;
+
 /** @return <code>@"opt_no_signal_int_dups"</code> — file omits the
  *          legacy integer-channel duplicates from
  *          <code>signal_channels/</code>. */

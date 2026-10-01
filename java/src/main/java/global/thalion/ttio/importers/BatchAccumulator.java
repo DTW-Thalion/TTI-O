@@ -29,12 +29,20 @@ final class BatchAccumulator {
     private final List<Integer> templateLengths = new ArrayList<>();
     private final List<byte[]> seqChunks = new ArrayList<>();
     private final List<byte[]> qualChunks = new ArrayList<>();
+    /** M101: per-read SAM tag text ("" when a read has none). */
+    private final List<String> tags = new ArrayList<>();
     private long totalBases;
 
     int size() { return readNames.size(); }
 
     void add(String qname, int flag, String rname, long pos, int mapq, String cigar,
              String rnext, long pnext, int tlen, byte[] seq, byte[] qual) {
+        add(qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual, "");
+    }
+
+    void add(String qname, int flag, String rname, long pos, int mapq, String cigar,
+             String rnext, long pnext, int tlen, byte[] seq, byte[] qual, String tagText) {
+        tags.add(tagText == null ? "" : tagText);
         readNames.add(qname);
         flags.add(flag);
         chromosomes.add(rname);
@@ -52,7 +60,7 @@ final class BatchAccumulator {
     void clear() {
         readNames.clear(); chromosomes.clear(); positions.clear(); mappingQualities.clear();
         flags.clear(); cigars.clear(); mateChromosomes.clear(); matePositions.clear();
-        templateLengths.clear(); seqChunks.clear(); qualChunks.clear();
+        templateLengths.clear(); seqChunks.clear(); qualChunks.clear(); tags.clear();
         totalBases = 0;
     }
 
@@ -92,6 +100,6 @@ final class BatchAccumulator {
             new ArrayList<>(cigars), new ArrayList<>(readNames), new ArrayList<>(mateChromosomes),
             matePos, tlens, new ArrayList<>(chromosomes), Compression.ZLIB, java.util.Map.of(),
             provenance == null ? List.of() : List.copyOf(provenance),
-            false, null, null, null, false, false);
+            false, null, null, null, false, false, null, 0L, new ArrayList<>(tags));
     }
 }

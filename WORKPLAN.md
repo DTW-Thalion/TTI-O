@@ -11,25 +11,25 @@ as a record of what was built; current milestones use TTI-O names.
 These gaps decide whether a .tio can stand in for BAM or CRAM 3.1 on
 aligned reads, so they come before new features.
 
-1. **Carry SAM optional tags.** The BAM and SAM importers keep fields
-   1-11 and discard the rest (Gotcha §152) in Python, Java and ObjC,
-   so a .tio made from a BAM is not a lossless copy of it. On the
-   HG002 2x250 GRCh38 BAM the tags are about 11.3% of each record:
-   PG 15.0 bytes, MD 13.6, PQ 7.8, AS and UQ 7.6, SM 7.4, AM 7.2,
-   NM 6.9. This needs a format-spec channel for them, a codec choice
-   (MD and NM can be recomputed from the reference and the alignment,
-   as CRAM does), import and export in Python, Java and ObjC, and a
-   conformance round trip.
-2. **Release and re-measure REF_DIFF_V2 with unmapped reads.** The fix
-   is in `[Unreleased]`: the kernel carries a CIGAR `*` read in the UL
-   substream and the writers no longer fall back to BASE_PACK. The
-   sizes on record predate it: on NA12878 WES chr22 TTI-O was 64.1 MB
-   against BAM 66.4 MB and CRAM 3.1 small 32.0 MB, and on HG002 2x250
-   chr22 1,000 MB with GRCh38 against CRAM 3.1 small 825 MB. After the
-   release, measure both slices and the whole HG002 BAM against CRAM
-   3.1 again. The comment above the BASE_PACK fallback in
-   `SpectralDatasetGenomicWriter.java` still names unmapped reads as a
-   cause of it, and they no longer are.
+1. ~~**Carry SAM optional tags.**~~ Done in M101 (SAM_TAGS, codec 18;
+   `HANDOFF.md`).
+2. **Release and re-measure.** Re-measured on the chr22 slices
+   2026-10-01 with the M101 code (tags kept) against CRAM 3.1 with a
+   full reference (`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`):
+   NA12878 WES chr22 TTI-O 44.7 MB against BAM 72.8 MB and CRAM 3.1
+   small 33.3 MB (was 64.1 MB); HG002 2x250 chr22 1,020.5 MB against
+   BAM 1,635.7 MB and CRAM 3.1 small 834.6 MB. The whole HG002 BAM and
+   the release are still to do. The comment above the BASE_PACK
+   fallback in `SpectralDatasetGenomicWriter.java` still names unmapped
+   reads as a cause of it, and they no longer are.
+3. **Read names.** The largest remaining gap to CRAM on HG002:
+   `read_names` is 152.4 MB against CRAM's RN series at 35.2 MB, 117 of
+   the 186 MB difference. Qualities are within 2% (726.9 against
+   712.2 MB).
+4. **Tokenised tag text.** On bwa output CRAM 3.1 is ahead on tags
+   (NA12878 WES 1.26 against 3.22 MB), on `XA:Z` alternative-hit
+   strings and the tag-line ids; SAM_TAGS needs a tokenised text column
+   and an order-1 line-id coder (a codec version bump).
 
 ---
 
@@ -1292,6 +1292,11 @@ is cheaper.
 | 93 | Per-AU encryption of a `blocks_v1` genomic run (M99) walks block by block: per-block codec decode from the block index, one AU per read with global AU numbering and global plaintext offsets, extendable segments tables appended per block. Decrypt-in-place re-encodes each block through the block writer under the sticky qualities discipline (block 0 auto-tunes, the winner read back from the encoded stream pins the rest). The block index is rewritten only when a re-encoded blob does not land on its recorded ranges (M99.1); byte-identity holds whenever the persisted writer policy attrs are honoured. | The block policy already bounds a block's decoded size, so streaming falls out of the layout; the sticky pin is recoverable from the first re-encoded blob, so no restore metadata is stored; and the index rewrite turns a policy mismatch into a consistency event instead of a refusal. |
 | 94 | The blocks_v1 stream writers persist non-default writer policy on the run group (`@ref_diff_slice_bytes`, `@opt_disable_qualities_v5`) and the reference set of a REF_DIFF_V2 run (`@reference_md5s`, each chromosome mapped to the hex reference-set digest); restore re-encodes under those attrs, resolving the reference from `/study/references/` or `REF_PATH` through the reference resolver (M99.1, replacing the M99 encrypt-time re-encode and byte-compare gate). When a re-encoded blob still differs, as for an older file without the attrs, restore rewrites the block index instead of refusing. | Persisting the policy makes restore reproducible by construction instead of verified per encrypt; the reference-set digest is the one the blob headers carry and the resolver verifies, so a REF_PATH restore needs no embedded copy; the fallback keeps pre-M99.1 files restorable, readable and consistent at the cost of byte-identity. |
 | 95 | The encrypted transport stream carries `blocks_v1` genomic runs via the transport-spec v0.12 sidecar packets — one GenomicRunSidecar (0x1C) per run with the run scalars, restore attrs and name tables, one BlockSidecar (0x1D) per block with the index row and the verbatim plaintext blob slices — announced by the required `transport_blocks_v1` StreamHeader feature token (M99.1, replacing the M99 sender refusal). Pre-v0.12 receivers skip the sidecar packets and rebuild an unrestorable legacy-shaped container, so senders must not target them; the stream does not carry embedded reference bytes. | The AU stream already carries everything per-read; the sidecars carry exactly the run- and block-scoped remainder, so a received container decrypts in place byte-identically, and the feature token is the wire-level detection handle the skip-unknown-packets rule cannot provide. |
+| 96 | SAM optional fields (M101) are kept as each read's tab-joined tag text exactly as `samtools view` prints it and stored as the genomic `tags` channel with SAM_TAGS (codec id 18), the channel's only codec. BAM integer widths are not kept; float and array values keep samtools' text. | The importers in Python and ObjC already see that text and Java's htsjdk can print it, so one representation is exact in all three SDKs; the width is a BAM encoding detail that samtools chooses again on write. |
+| 97 | SAM_TAGS is a CRAM-style column codec in one native kernel shared by the three SDKs: a per-blob tag-line dictionary, one column per (key, type, kind), DERIVED MD:Z/NM:i (samtools calmd rules) when they match the recomputation, DUP back-references for an integer equal to an earlier tag in the read, VERBATIM storage for anything else, so decode returns the input text byte-exactly. Substreams use rANS order-0 with the codec-4 table listed sparsely; order-1 is not used. | Phase 0 (HG002 2x250 chr22, 10.6 M reads): 1.93 B/read against 2.57 for CRAM 3.1 small (full-reference baseline, corrected 2026-10-01) and 17.08 for the text through rANS order-1; MD/NM recompute on every read that carries them. On bwa output (NA12878 WES) CRAM's tokeniser is ahead on `XA:Z` strings, a follow-up. The sparse table recovers the 4% a fixed 1024-byte table costs per block; order-1 would add 3.3%. |
+| 98 | MD/NM are DERIVED only in a blob whose block codes `sequences` with REF_DIFF_V2, against the reference that blob names. | A reader that can decode the sequences already has that reference, so the tags never add a reference dependency of their own. |
+| 99 | The `tags` channel exists only in runs whose reads carry tags: no dataset, no `blocks/index` columns and no `opt_sam_tags` otherwise. The index's `tags_off`, `tags_len`, `tags_codec` follow the required columns; readers treat absent columns as an empty channel; a stream writer whose first tagged block follows untagged blocks rewrites the index once with the triple. Transport lists a `tags` AU channel and a BlockSidecar `tags` entry only for such runs. | Files and streams without tags stay byte-identical to pre-M101 output, the additive-content precedent of `opt_assembly_graph`; trailing columns keep every existing column at its position for positional writers. |
+| 100 | Per-AU encryption encrypts `tags` whenever it encrypts `sequences` (one AU per read, plaintext the read's tag text), signatures cover the `tags` dataset, and the whole-channel and region encryption paths refuse a run that carries tags. | An MD string lists the read's mismatches against the reference, i.e. its variants, so leaving tags in plaintext would defeat sequence encryption; refusing is safer than a partial protection the caller cannot see. |
 
 ---
 

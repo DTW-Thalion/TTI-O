@@ -118,6 +118,10 @@ class Compression(IntEnum):
     # channel codec when TransportWriter(use_compression=True), one
     # FDZ1 stream per channel.
     FLOAT_DELTA_ZSTD = 17
+    # M101: SAM optional fields as a tag-line dictionary plus one
+    # column per tag key, MD/NM recomputed from the reference. The
+    # genomic ``tags`` channel's only codec (docs/codecs/sam_tags.md).
+    SAM_TAGS = 18
 
 
 class ByteOrder(IntEnum):

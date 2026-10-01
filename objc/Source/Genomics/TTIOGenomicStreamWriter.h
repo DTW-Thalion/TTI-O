@@ -72,8 +72,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)layout;
 /** Chunk of the unfiltered channel datasets (256 KiB). */
 + (NSUInteger)channelChunk;
-/** Block index schema, in the column order of format-spec 10.12.2. */
+/** Block index schema, in the column order of format-spec 10.12.2:
+ *  the required channels only. */
 + (NSArray<TTIOCompoundField *> *)indexFields;
+/** The schema of a run that carries the tags channel (M101): the tags
+ *  (off, len, codec) triple follows the required columns. */
++ (NSArray<TTIOCompoundField *> *)indexFieldsWithTags;
+/** The index schema for existing index rows: with the tags triple when
+ *  the first row carries <code>tags_off</code>. */
++ (NSArray<TTIOCompoundField *> *)indexFieldsForRows:(NSArray<NSDictionary *> *)rows;
 
 /** Append reads to run <code>runName</code> of the /study group
  *  <code>study</code>; the writer creates genomic_runs when absent and

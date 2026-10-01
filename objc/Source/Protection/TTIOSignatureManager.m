@@ -577,8 +577,10 @@ static BOOL markPQCPreviewFeature(TTIOHDF5Group *root, NSError **error)
 // canonicalBytesForCompoundDataset, which already serialises
 // VL_STRING fields as u32_le(length) || utf-8_bytes — so signing the
 // chromosomes compound parallels Python's M90.15 path.
+// M101: the SAM tags channel (a flat uint8 SAM_TAGS stream) is signed
+// with the bases it describes, when present.
 static NSString *const kSignalChannelNames[] = {
-    @"sequences", @"qualities",
+    @"sequences", @"qualities", @"tags",
 };
 // L1 (Task #82 Phase B.1, 2026-05-01): chromosomes are decomposed
 // into chromosome_ids (uint16) + chromosome_names (compound) — both

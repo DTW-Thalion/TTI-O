@@ -1439,6 +1439,10 @@ public final class TransportReader implements AutoCloseable {
         final List<String> mateChroms = new ArrayList<>();
         final List<Long> matePositions = new ArrayList<>();
         final List<Integer> templateLengths = new ArrayList<>();
+        // M101: per-read SAM tag text; anyTags marks a stream that
+        // carried the tags channel at all.
+        final List<String> tags = new ArrayList<>();
+        boolean anyTags = false;
         long runningOffset = 0L;
         int acquisitionMode = 0;
 
@@ -1461,6 +1465,7 @@ public final class TransportReader implements AutoCloseable {
             String cigarStr = "";
             String nameStr = "";
             String mateChrStr = "";
+            String tagsStr = "";
             for (ChannelData ch : au.channels) {
                 if (ch.precision != Enums.Precision.UINT8.ordinal()) {
                     throw new IllegalStateException(
@@ -1484,8 +1489,12 @@ public final class TransportReader implements AutoCloseable {
                     nameStr = new String(decoded, StandardCharsets.UTF_8);
                 } else if ("mate_chromosome".equals(ch.name)) {
                     mateChrStr = new String(decoded, StandardCharsets.UTF_8);
+                } else if ("tags".equals(ch.name)) {
+                    tagsStr = new String(decoded, StandardCharsets.UTF_8);
+                    anyTags = true;
                 }
             }
+            tags.add(tagsStr);
             cigars.add(cigarStr);
             readNames.add(nameStr);
             mateChroms.add(mateChrStr);
@@ -1576,6 +1585,7 @@ public final class TransportReader implements AutoCloseable {
                 cigarsOut, readNamesOut, mateChromsOut, mateP, tlens,
                 new ArrayList<>(chromosomes),
                 Enums.Compression.ZLIB);
+            if (anyTags) decoded = decoded.withTags(new ArrayList<>(tags));
             return readRole.isEmpty() ? decoded
                                       : decoded.withReadRole(readRole);
         }

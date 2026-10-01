@@ -156,6 +156,11 @@ class GenomicRun:
     _decoded_cigars: list[str] | None = field(
         default=None, repr=False, compare=False,
     )
+    # M101: decoded SAM_TAGS channel, one string per read; [] when the
+    # run has no tags channel. None until first access.
+    _decoded_tags: list[str] | None = field(
+        default=None, repr=False, compare=False,
+    )
     # combined per-field cache for the mate_info subgroup
     # layout (Gotcha §144). Held as a single
     # ``dict[str, Any]`` keyed by field name (``"chrom"`` →
@@ -557,6 +562,7 @@ class GenomicRun:
         mate_chromosome = self._mate_chrom_at(i)
         mate_position = self._mate_pos_at(i)
         template_length = self._mate_tlen_at(i)
+        tags = self._all_tags()
 
         return AlignedRead(
             read_name=read_name,
@@ -570,6 +576,7 @@ class GenomicRun:
             mate_chromosome=mate_chromosome,
             mate_position=mate_position,
             template_length=template_length,
+            tags=tags[i] if tags else "",
         )
 
     # ------------------------------------------------------------------
@@ -749,9 +756,51 @@ class GenomicRun:
             # provider fires only for version-5 streams.
             sequences_provider=lambda: self._byte_channel_slice(
                 "sequences", 0, int(sum(idx.lengths))),
+            tag_references_provider=lambda: self._tag_references(name_to_id, resolver),
         )
         self._codec_ctx_cache = ctx
         return ctx
+
+    def _tag_references(self, name_to_id: dict[str, int], resolver) -> "list[bytes | None]":
+        """References for SAM_TAGS MD/NM derivation, indexed like
+        ``own_chrom_ids``. The writer derives only on REF_DIFF_V2 runs
+        (binding decision §96), whose one chromosome resolves the same
+        way the sequences decode does; any other run gets none."""
+        if not self._sequences_is_ref_diff_v2():
+            return []
+        from .codecs import ref_diff_v2
+        ds = self._signal_channels_group().open_group("sequences").open_dataset("refdiff_v2")
+        # The outer header is 38 bytes plus a uint16-length URI.
+        header = ref_diff_v2.parse_blob_header(
+            bytes(ds.read(offset=0, count=min(int(ds.length), 38 + 0xFFFF))))
+        names = sorted(set(self.index.chromosomes) - {"*", ""})
+        refs: list[bytes | None] = [None] * len(name_to_id)
+        if len(names) == 1 and names[0] in name_to_id:
+            refs[name_to_id[names[0]]] = resolver.resolve(
+                uri=header.reference_uri, expected_md5=header.reference_md5, chromosome=names[0])
+        return refs
+
+    def _all_tags(self) -> list[str]:
+        """Every read's SAM tag text (M101), decoded once; [] when the
+        run has no ``tags`` channel."""
+        if self._decoded_tags is not None:
+            return self._decoded_tags
+        sig = self._signal_channels_group()
+        if not sig.has_child("tags"):
+            self._decoded_tags = []
+            return self._decoded_tags
+        ds = sig.open_dataset("tags")
+        codec_id = io.read_int_attr(ds, "compression", default=0) or 0
+        if codec_id != int(Compression.SAM_TAGS):
+            raise ValueError(
+                f"signal_channel 'tags': @compression={codec_id} is not "
+                "SAM_TAGS (18), the only codec of the tags channel")
+        from .codecs._registry import CODEC_REGISTRY
+        from .codecs._context import ChannelPayload
+        blob = bytes(ds.read(offset=0, count=int(ds.length)))
+        self._decoded_tags = CODEC_REGISTRY[Compression.SAM_TAGS].decode(
+            ChannelPayload.of_bytes(blob), self._codec_context()).as_str_list()
+        return self._decoded_tags
 
     def _byte_channel_slice(self, name: str, offset: int, count: int) -> bytes:
         """Return bytes ``[offset, offset+count)`` for a uint8 byte channel.

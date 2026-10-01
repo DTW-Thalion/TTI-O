@@ -57,6 +57,8 @@ NS_ASSUME_NONNULL_BEGIN
  *  float64 LE}}`` for a per-AU-encrypted file. When
  *  opt_encrypted_au_headers is set, the run map also carries
  *  ``__au_headers__`` as an NSArray<TTIOAUHeaderPlaintext *>.
+ *  A genomic run that carries SAM tags (M101) maps ``tags`` to an
+ *  NSArray<NSString *>, one string per read.
  */
 + (nullable NSDictionary<NSString *, NSDictionary *> *)
     decryptFilePath:(NSString *)path

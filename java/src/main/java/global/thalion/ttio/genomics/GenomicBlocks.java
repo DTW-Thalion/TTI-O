@@ -29,9 +29,18 @@ import java.util.Map;
  */
 public final class GenomicBlocks {
 
-    /** Blob channels of a block, in block-index column order. */
-    public static final List<String> BLOCK_CHANNELS =
+    /** Blob channels every blocks_v1 run indexes, in block-index column
+     *  order. */
+    public static final List<String> REQUIRED_BLOCK_CHANNELS =
         List.of("sequences", "qualities", "read_names", "cigars", "mate_info");
+    /** Channels whose index columns exist only in runs that carry them
+     *  (M101: the SAM tags). Their (off, len, codec) columns follow the
+     *  required channels' codec columns; a reader treats missing columns
+     *  as an empty channel (format-spec 10.12.2). */
+    public static final List<String> OPTIONAL_BLOCK_CHANNELS = List.of("tags");
+    /** Every blob channel of a block. */
+    public static final List<String> BLOCK_CHANNELS =
+        List.of("sequences", "qualities", "read_names", "cigars", "mate_info", "tags");
 
     private GenomicBlocks() {}
 
@@ -78,7 +87,8 @@ public final class GenomicBlocks {
             run.signalCompression(), run.signalCodecOverrides(), List.of(),
             run.embedReference(), run.referenceChromSeqs(), run.externalReferencePath(),
             null, run.optDisableQualitiesV5(), run.optLegacyWholeChannel(),
-            run.readRole(), run.refDiffSliceBytes());
+            run.readRole(), run.refDiffSliceBytes(),
+            run.tags() == null ? null : new ArrayList<>(run.tags().subList(start, stop)));
     }
 
     /** The inverse of {@link #sliceRun} for consecutive parts. */
@@ -98,8 +108,15 @@ public final class GenomicBlocks {
         byte[] quals = new byte[(int) bases];
         List<String> cigars = new ArrayList<>(n), names = new ArrayList<>(n),
                      mateChroms = new ArrayList<>(n), chroms = new ArrayList<>(n);
+        boolean anyTags = false;
+        for (WrittenGenomicRun p : parts) anyTags |= p.tags() != null;
+        List<String> tags = anyTags ? new ArrayList<>(n) : null;
         int r = 0, b = 0;
         for (WrittenGenomicRun p : parts) {
+            if (tags != null) {
+                if (p.tags() != null) tags.addAll(p.tags());
+                else for (int i = 0; i < p.readCount(); i++) tags.add("");
+            }
             int pn = p.readCount();
             System.arraycopy(p.positions(), 0, positions, r, pn);
             System.arraycopy(p.mappingQualities(), 0, mapqs, r, pn);
@@ -124,7 +141,7 @@ public final class GenomicBlocks {
             first.signalCompression(), first.signalCodecOverrides(), List.of(),
             first.embedReference(), first.referenceChromSeqs(), first.externalReferencePath(),
             null, first.optDisableQualitiesV5(), first.optLegacyWholeChannel(),
-            first.readRole(), first.refDiffSliceBytes());
+            first.readRole(), first.refDiffSliceBytes(), tags);
     }
 
     /** Encode one block's channels through the whole-channel writer. The
@@ -199,7 +216,7 @@ public final class GenomicBlocks {
 
     /** {@code parent}'s child {@code name} as a group, or {@code null}
      *  when it is a dataset or absent. */
-    static StorageGroup tryGroup(StorageGroup parent, String name) {
+    public static StorageGroup tryGroup(StorageGroup parent, String name) {
         if (!parent.hasChild(name)) return null;
         try {
             return parent.openGroup(name);

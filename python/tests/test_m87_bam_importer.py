@@ -310,7 +310,7 @@ def test_bam_dump_canonical_json_shape():
         "read_names", "positions", "chromosomes", "flags",
         "mapping_qualities", "cigars", "mate_chromosomes", "mate_positions",
         "template_lengths", "sequences_md5", "qualities_md5",
-        "provenance_count",
+        "provenance_count", "tags",
     }
     assert set(payload.keys()) == expected_keys
     assert payload["read_count"] == 10

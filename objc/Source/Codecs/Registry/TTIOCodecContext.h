@@ -37,6 +37,15 @@ NS_ASSUME_NONNULL_BEGIN
  *  V5, TTIOM94ZHintV4Auto V4 with internal preset selection. */
 @property (nullable, strong) NSNumber *qualStrategyHint;
 
+// SAM_TAGS (M101): the reference bases per ownChromIds value, for
+// MD/NM derivation (NSData, or NSNull where there is none). Encode:
+// the array itself (nil/empty = no derivation). Decode: a lazy block,
+// called once per decode. The other derivation inputs are
+// sequences / sequencesProvider, offsets / readLengths, cigarsProvider,
+// positions and ownChromIds.
+@property (nullable, copy)   NSArray *tagReferences;
+@property (nullable, copy)   NSArray * _Nullable (^tagReferencesProvider)(void);
+
 + (instancetype)emptyContext;
 @end
 

@@ -684,6 +684,10 @@ typedef struct {
                 gd[@"cigars"] = [NSMutableArray array];
                 gd[@"readNames"] = [NSMutableArray array];
                 gd[@"mateChromosomes"] = [NSMutableArray array];
+                // M101: per-read SAM tag text; anyTags marks a stream
+                // that carried the tags channel at all.
+                gd[@"tags"] = [NSMutableArray array];
+                gd[@"anyTags"] = @NO;
                 gd[@"matePositions"] = [NSMutableArray array];
                 gd[@"templateLengths"] = [NSMutableArray array];
                 genomicData[@(did)] = gd;
@@ -765,6 +769,7 @@ typedef struct {
                 NSString *cigarStr = @"";
                 NSString *readNameStr = @"";
                 NSString *mateChrStr = @"";
+                NSString *tagsStr = @"";
                 for (TTIOTransportChannelData *ch in au.channels) {
                     if (ch.precision != TTIOPrecisionUInt8) {
                         if (error) *error = [NSError errorWithDomain:TTIOTransportErrorDomain
@@ -819,8 +824,13 @@ typedef struct {
                     } else if ([ch.name isEqualToString:@"mate_chromosome"]) {
                         mateChrStr = [[NSString alloc] initWithData:decoded
                                                               encoding:NSUTF8StringEncoding] ?: @"";
+                    } else if ([ch.name isEqualToString:@"tags"]) {
+                        tagsStr = [[NSString alloc] initWithData:decoded
+                                                         encoding:NSUTF8StringEncoding] ?: @"";
+                        gd[@"anyTags"] = @YES;
                     }
                 }
+                [(NSMutableArray *)gd[@"tags"] addObject:tagsStr];
                 [(NSMutableArray *)gd[@"cigars"] addObject:cigarStr];
                 [(NSMutableArray *)gd[@"readNames"] addObject:readNameStr];
                 [(NSMutableArray *)gd[@"mateChromosomes"] addObject:mateChrStr];
@@ -1878,6 +1888,14 @@ typedef struct {
                         chromosomes:[gd[@"chromosomes"] copy]
                   signalCompression:TTIOCompressionNone];
         if (readRole.length > 0) wgr.readRole = readRole;
+        if ([gd[@"anyTags"] boolValue]) {
+            NSArray *tagsCollected = gd[@"tags"] ?: @[];
+            NSMutableArray *tags = [NSMutableArray arrayWithCapacity:n];
+            for (NSUInteger i = 0; i < n; i++) {
+                [tags addObject:(i < tagsCollected.count ? tagsCollected[i] : @"")];
+            }
+            wgr.tags = tags;
+        }
         // Phase 2c-T: attach verbatim blobs collected for this dataset_id.
         TTIOBulkV2Blobs *slot = bulkBlobs[didKey];
         if (slot) wgr.bulkV2Blobs = slot;

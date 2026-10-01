@@ -641,6 +641,11 @@ def _decrypt_blocks_v1_run_in_place(study, run_group, dataset_id: int,
             new_ranges[ch].append(
                 (written[ch], len(got),
                  int(blobs.compression.get(ch, 0))))
+            # The stream writer creates a channel at its first non-empty
+            # blob (tags may first appear in a later block, M101); do the
+            # same so the dataset's codec and filter match.
+            if ch not in new_ds and not got:
+                continue
             if ch not in new_ds:
                 if ch == "sequences":
                     parent = sig.create_group("sequences")

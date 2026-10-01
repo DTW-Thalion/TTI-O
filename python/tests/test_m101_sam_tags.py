@@ -206,6 +206,28 @@ def test_per_au_encrypts_tags_and_restores_byte_identical(tmp_path):
         assert genomic_run_sam_full_md5(ds.genomic_runs["genomic_0001"]) == sam_full_md5(sam)
 
 
+def test_per_au_restores_tags_first_appearing_in_a_later_block(tmp_path):
+    """The restore creates the tags dataset at the first tagged block,
+    as the stream writer does, so its codec and filter match."""
+    import h5py
+    from ttio.encryption_per_au import decrypt_per_au_in_place, encrypt_per_au
+    sam, ref = _make_sam(tmp_path, tagless_prefix=250)
+    path = tmp_path / "o.tio"
+    im.encode("sam", [str(sam)], str(path), reference=str(ref), embed_reference=True,
+              block_reads=100)
+
+    def tags_meta(p):
+        with h5py.File(p, "r") as f:
+            ds = f["study/genomic_runs/genomic_0001/signal_channels/tags"]
+            return int(ds.attrs["compression"]), ds.compression
+
+    before, meta = _channel_state(path), tags_meta(path)
+    encrypt_per_au(str(path), KEY)
+    decrypt_per_au_in_place(str(path), KEY)
+    assert _channel_state(path) == before
+    assert tags_meta(path) == meta == (18, None)
+
+
 def test_per_au_refuses_whole_channel_tags(tmp_path):
     import dataclasses
     from ttio.encryption_per_au import encrypt_per_au

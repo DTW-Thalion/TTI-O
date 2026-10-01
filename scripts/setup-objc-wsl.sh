@@ -30,7 +30,7 @@ sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   clang cmake ninja-build make git ca-certificates zlib1g-dev libssl-dev \
   libxml2-dev libgnutls28-dev libffi-dev libicu-dev libblocksruntime-dev \
-  libcurl4-openssl-dev libwebsockets-dev tzdata libzstd-dev samtools \
+  libcurl4-openssl-dev libwebsockets-dev tzdata libzstd-dev samtools libsqlite3-dev \
   lsb-release wget
 
 if [ ! -e "$PREFIX/lib/libobjc.so" ]; then

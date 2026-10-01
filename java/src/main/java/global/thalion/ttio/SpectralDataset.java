@@ -1293,6 +1293,19 @@ public class SpectralDataset implements
             withFlags.add(FeatureFlags.OPT_ASSEMBLY_GRAPH);
             featureFlags = new FeatureFlags(targetVersion, withFlags);
         }
+        // M101: opt_sam_tags when any genomic run carries SAM optional
+        // fields (a tags channel); tag-less files are unchanged.
+        boolean hasSamTags = false;
+        if (hasGenomic) {
+            for (WrittenGenomicRun g : genomicRuns) hasSamTags |= g.hasTags();
+        }
+        if (hasSamTags
+                && !featureFlags.features().contains(FeatureFlags.OPT_SAM_TAGS)) {
+            java.util.Set<String> withFlags =
+                new java.util.LinkedHashSet<>(featureFlags.features());
+            withFlags.add(FeatureFlags.OPT_SAM_TAGS);
+            featureFlags = new FeatureFlags(targetVersion, withFlags);
+        }
 
         java.util.List<String> gNamesList = genomicRunNames != null
             ? new java.util.ArrayList<>(genomicRunNames) : new java.util.ArrayList<>();

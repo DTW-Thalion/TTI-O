@@ -38,6 +38,9 @@ package global.thalion.ttio.genomics;
  * @param mateChromosome {@code ""} if unpaired.
  * @param matePosition   {@code -1} if unpaired.
  * @param templateLength {@code 0} if unpaired.
+ * @param tags           M101: the SAM optional fields (columns 12+),
+ *                       tab-joined as samtools prints them; {@code ""}
+ *                       when the read has none.
  */
 public record AlignedRead(
     String readName,
@@ -50,8 +53,22 @@ public record AlignedRead(
     int    flags,
     String mateChromosome,
     long   matePosition,
-    int    templateLength
+    int    templateLength,
+    String tags
 ) {
+    public AlignedRead {
+        if (tags == null) tags = "";
+    }
+
+    /** Pre-M101 signature (11 components); no SAM tags. */
+    public AlignedRead(String readName, String chromosome, long position,
+                       int mappingQuality, String cigar, String sequence,
+                       byte[] qualities, int flags, String mateChromosome,
+                       long matePosition, int templateLength) {
+        this(readName, chromosome, position, mappingQuality, cigar, sequence,
+             qualities, flags, mateChromosome, matePosition, templateLength, "");
+    }
+
     /** SAM flag 0x4: read failed to map. */
     public boolean isMapped()        { return (flags & 0x4) == 0; }
     /** SAM flag 0x1: read is part of a pair. */

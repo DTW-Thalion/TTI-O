@@ -12,6 +12,7 @@ import global.thalion.ttio.genomics.WrittenGenomicRun;
 import global.thalion.ttio.importers.BamReader;
 import global.thalion.ttio.io.ProgressSink;
 
+import htsjdk.samtools.SAMBinaryTagAndValue;
 import htsjdk.samtools.SAMFileHeader;
 import htsjdk.samtools.SAMFileWriter;
 import htsjdk.samtools.SAMFileWriterFactory;
@@ -20,6 +21,7 @@ import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.SAMRecord;
 import htsjdk.samtools.SAMSequenceDictionary;
 import htsjdk.samtools.SAMSequenceRecord;
+import htsjdk.samtools.SAMTag;
 import htsjdk.samtools.cram.ref.ReferenceSource;
 
 import java.io.IOException;
@@ -268,7 +270,8 @@ public class BamWriter {
     /** One {@link AlignedRead} as a SAM record (same field rules as the
      *  array-based builder). */
     private SAMRecord buildSamRecord(AlignedRead r, SAMFileHeader header) {
-        SAMRecord rec = new SAMRecord(header);
+        OrderedTagRecord rec = new OrderedTagRecord(header);
+        rec.setTagText(r.tags());
         String qname = r.readName();
         rec.setReadName((qname == null || qname.isEmpty()) ? "*" : qname);
         rec.setFlags(r.flags());
@@ -304,7 +307,8 @@ public class BamWriter {
 
     private SAMRecord buildSamRecord(WrittenGenomicRun run,
                                      SAMFileHeader header, int i) {
-        SAMRecord rec = new SAMRecord(header);
+        OrderedTagRecord rec = new OrderedTagRecord(header);
+        if (run.tags() != null) rec.setTagText(run.tags().get(i));
 
         String qnameRaw = run.readNames().get(i);
         rec.setReadName((qnameRaw == null || qnameRaw.isEmpty()) ? "*" : qnameRaw);
@@ -484,6 +488,7 @@ public class BamWriter {
         int[] flags = run.flags();
         int[] templateLengths = run.templateLengths();
         byte[] mappingQualities = run.mappingQualities();
+        List<String> tags = run.tags();
 
         int n = readNames.size();
         for (int i = 0; i < n; i++) {
@@ -544,7 +549,110 @@ public class BamWriter {
               .append(pnext).append('\t')
               .append(tlen).append('\t')
               .append(seq).append('\t')
-              .append(qual).append('\n');
+              .append(qual);
+            // M101: the optional fields follow column 11 verbatim.
+            String tail = tags == null ? "" : tags.get(i);
+            if (!tail.isEmpty()) sb.append('\t').append(tail);
+            sb.append('\n');
         }
+    }
+
+    // ------------------------------------------------------------------
+    // M101: SAM optional fields
+    // ------------------------------------------------------------------
+
+    /** A {@link SAMBinaryTagAndValue} that can be linked in a chosen
+     *  order: htsjdk inserts attributes sorted by tag, which would
+     *  reorder a read's optional fields on export. */
+    static final class OrderedTag extends SAMBinaryTagAndValue {
+        private static final long serialVersionUID = 1L;
+        private final boolean unsignedArray;
+
+        OrderedTag(String key, Object value, boolean unsignedArray) {
+            super(SAMTag.makeBinaryTag(key), value);
+            this.unsignedArray = unsignedArray;
+        }
+
+        @Override public boolean isUnsignedArray() { return unsignedArray; }
+
+        void link(OrderedTag n) { this.next = n; }
+    }
+
+    /** A {@link SAMRecord} whose attributes keep the order of the
+     *  stored tag text. */
+    static final class OrderedTagRecord extends SAMRecord {
+        private static final long serialVersionUID = 1L;
+
+        OrderedTagRecord(SAMFileHeader header) { super(header); }
+
+        /** Replace the attributes with the parsed tag text, in order. */
+        void setTagText(String text) {
+            List<OrderedTag> list = parseTagText(text);
+            for (int k = 0; k + 1 < list.size(); k++) list.get(k).link(list.get(k + 1));
+            setAttributes(list.isEmpty() ? null : list.get(0));
+        }
+    }
+
+    /** Parse samtools-style tag text ({@code KEY:TYPE:VALUE}, tab-joined)
+     *  into typed htsjdk values: {@code i} as Integer (Long past the
+     *  int32 range; htsjdk picks the BAM width), {@code f} Float,
+     *  {@code A} Character, {@code Z} String, {@code B} the matching
+     *  primitive array (unsigned subtypes flagged). htsjdk has no
+     *  {@code H} or {@code d} writer, so those are written as
+     *  {@code Z}. */
+    static List<OrderedTag> parseTagText(String text) {
+        List<OrderedTag> out = new java.util.ArrayList<>();
+        if (text == null || text.isEmpty()) return out;
+        for (String f : text.split("\t", -1)) {
+            if (f.length() < 5 || f.charAt(2) != ':' || f.charAt(4) != ':') {
+                throw new IllegalArgumentException("malformed SAM optional field '" + f + "'");
+            }
+            String key = f.substring(0, 2);
+            char type = f.charAt(3);
+            String val = f.substring(5);
+            Object v;
+            boolean unsigned = false;
+            switch (type) {
+                case 'A' -> v = val.isEmpty() ? ' ' : val.charAt(0);
+                case 'i' -> {
+                    long l = Long.parseLong(val);
+                    v = (l >= Integer.MIN_VALUE && l <= Integer.MAX_VALUE) ? (Object) (int) l : (Object) l;
+                }
+                case 'f' -> v = (float) Double.parseDouble(val);
+                case 'B' -> {
+                    String[] parts = val.split(",", -1);
+                    char sub = parts[0].charAt(0);
+                    int n = parts.length - 1;
+                    unsigned = sub == 'C' || sub == 'S' || sub == 'I';
+                    switch (sub) {
+                        case 'c', 'C' -> {
+                            byte[] a = new byte[n];
+                            for (int k = 0; k < n; k++) a[k] = (byte) Long.parseLong(parts[k + 1]);
+                            v = a;
+                        }
+                        case 's', 'S' -> {
+                            short[] a = new short[n];
+                            for (int k = 0; k < n; k++) a[k] = (short) Long.parseLong(parts[k + 1]);
+                            v = a;
+                        }
+                        case 'i', 'I' -> {
+                            int[] a = new int[n];
+                            for (int k = 0; k < n; k++) a[k] = (int) Long.parseLong(parts[k + 1]);
+                            v = a;
+                        }
+                        case 'f' -> {
+                            float[] a = new float[n];
+                            for (int k = 0; k < n; k++) a[k] = (float) Double.parseDouble(parts[k + 1]);
+                            v = a;
+                        }
+                        default -> throw new IllegalArgumentException(
+                            "SAM optional field '" + f + "': unknown B subtype '" + sub + "'");
+                    }
+                }
+                default -> v = val;          // Z, and H / d written as Z
+            }
+            out.add(new OrderedTag(key, v, unsigned));
+        }
+        return out;
     }
 }

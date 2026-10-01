@@ -26,7 +26,14 @@ public record CodecContext(
         Long sliceBytes,
         byte[] sequences,
         Supplier<byte[]> sequencesProvider,
-        Integer qualStrategyHint) {
+        Integer qualStrategyHint,
+        /** SAM_TAGS (M101) encode: the reference bases per
+         *  {@code ownChromIds} value, for MD/NM derivation; null or
+         *  all-null = no derivation. */
+        java.util.List<byte[]> tagReferences,
+        /** SAM_TAGS (M101) decode: the same list, built lazily and
+         *  called once per decode. */
+        Supplier<java.util.List<byte[]>> tagReferencesProvider) {
 
     public static CodecContext empty() { return builder().build(); }
 
@@ -54,6 +61,8 @@ public record CodecContext(
         private byte[] sequences;
         private Supplier<byte[]> sequencesProvider;
         private Integer qualStrategyHint;
+        private java.util.List<byte[]> tagReferences;
+        private Supplier<java.util.List<byte[]>> tagReferencesProvider;
 
         public Builder readLengths(int[] v) { this.readLengths = v; return this; }
         public Builder revcompFlags(int[] v) { this.revcompFlags = v; return this; }
@@ -77,13 +86,18 @@ public record CodecContext(
         public Builder sequences(byte[] v) { this.sequences = v; return this; }
         public Builder sequencesProvider(Supplier<byte[]> v) { this.sequencesProvider = v; return this; }
         public Builder qualStrategyHint(Integer v) { this.qualStrategyHint = v; return this; }
+        public Builder tagReferences(java.util.List<byte[]> v) { this.tagReferences = v; return this; }
+        public Builder tagReferencesProvider(Supplier<java.util.List<byte[]>> v) {
+            this.tagReferencesProvider = v; return this;
+        }
 
         public CodecContext build() {
             return new CodecContext(readLengths, revcompFlags, elementSize, readCount,
                 positions, cigarsProvider, totalBases, chromosomes, ownChromIds,
                 ownPositions, nRecords, referenceResolver, offsets, reference,
                 referenceMd5, referenceUri, readsPerSlice, sliceBytes,
-                sequences, sequencesProvider, qualStrategyHint);
+                sequences, sequencesProvider, qualStrategyHint,
+                tagReferences, tagReferencesProvider);
         }
     }
 }

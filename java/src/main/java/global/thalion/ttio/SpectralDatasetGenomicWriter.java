@@ -465,6 +465,13 @@ public final class SpectralDatasetGenomicWriter {
                 } else {
                     writeMateInfoV2(sc, run, ctx.chromNameToId());
                 }
+
+                // M101 — SAM optional fields. A run whose reads carry
+                // no tags writes no tags channel, so tag-less files are
+                // unchanged.
+                if (run.hasTags()) {
+                    writeTags(sc, run);
+                }
             }
 
             // Phase 2 (post-M91): per-run provenance, mirroring
@@ -477,6 +484,70 @@ public final class SpectralDatasetGenomicWriter {
             if (!run.provenanceRecords().isEmpty()) {
                 writeRunProvenance(rg, run.provenanceRecords());
             }
+        }
+    }
+
+    /** Write {@code signal_channels/tags} through SAM_TAGS (codec id 18).
+     *
+     *  <p>MD:Z / NM:i are recomputed from the reference only when the
+     *  sequences channel went through REF_DIFF_V2, so a reader that can
+     *  decode the sequences can always decode the tags (binding decision
+     *  §96). REF_DIFF_V2 runs hold one chromosome: reads on it get the
+     *  reference, every other read (unmapped {@code *}) none. Mirrors
+     *  Python {@code _write_tags}.</p> */
+    static void writeTags(global.thalion.ttio.providers.StorageGroup sc,
+                          WrittenGenomicRun run) {
+        int n = run.cigars().size();
+        if (run.tags().size() != n) {
+            throw new IllegalArgumentException("WrittenGenomicRun.tags has "
+                + run.tags().size() + " entries for " + n + " reads");
+        }
+        boolean derive = false;
+        var seqGroup = global.thalion.ttio.genomics.GenomicBlocks.tryGroup(sc, "sequences");
+        if (seqGroup != null) derive = seqGroup.hasChild("refdiff_v2");
+        List<byte[]> refs = new ArrayList<>();
+        short[] chromIds = new short[n];
+        Arrays.fill(chromIds, (short) 0xFFFF);
+        if (derive && run.referenceChromSeqs() != null) {
+            TreeSet<String> names = new TreeSet<>(run.chromosomes());
+            names.remove("*");
+            names.remove("");
+            if (names.size() == 1 && run.referenceChromSeqs().get(names.first()) != null) {
+                String chrom = names.first();
+                refs.add(run.referenceChromSeqs().get(chrom));
+                for (int i = 0; i < n; i++) {
+                    if (chrom.equals(run.chromosomes().get(i))) chromIds[i] = 0;
+                }
+            }
+        }
+        long[] offsets = new long[n + 1];
+        for (int i = 0; i < n; i++) offsets[i + 1] = offsets[i] + run.lengths()[i];
+        String[] cigarArr = run.cigars().toArray(new String[0]);
+        var tagCtx = global.thalion.ttio.codecs.registry.CodecContext.builder()
+            .sequences(refs.isEmpty() ? null : run.sequences())
+            .offsets(offsets)
+            .cigarsProvider(() -> cigarArr)
+            .positions(run.positions())
+            .ownChromIds(chromIds)
+            .tagReferences(refs)
+            .build();
+        byte[] blob = ((global.thalion.ttio.codecs.registry.EncodedChannel.DatasetBytes)
+            global.thalion.ttio.codecs.registry.CodecRegistry.CODEC_REGISTRY
+                .get(Enums.Compression.SAM_TAGS)
+                .encode(new global.thalion.ttio.codecs.registry.DecodedChannel.StrList(
+                    run.tags()), tagCtx)).bytes();
+        global.thalion.ttio.providers.StorageDataset ds;
+        try {
+            ds = sc.createDataset("tags", Enums.Precision.UINT8, blob.length,
+                65536, Enums.Compression.NONE, 0);
+        } catch (UnsupportedOperationException e) {
+            ds = sc.createDataset("tags", Enums.Precision.UINT8, blob.length,
+                0, Enums.Compression.NONE, 0);
+        }
+        try (var closeMe = ds) {
+            closeMe.writeAll(blob);
+            closeMe.setAttribute("compression",
+                codecIdFor(Enums.Compression.SAM_TAGS));
         }
     }
 

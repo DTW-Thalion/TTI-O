@@ -29,6 +29,9 @@ public final class BlockTable {
     /** channel -> codec id per block; {@code null} when the file has no
      *  codec columns */
     final Map<String, int[]> codec;
+    /** The channels whose columns the index carries: the required five,
+     *  plus {@code tags} when the run has the tags triple (M101). */
+    List<String> channels = GenomicBlocks.REQUIRED_BLOCK_CHANNELS;
 
     private BlockTable(int n, boolean hasCodecs) {
         readStart = new long[n];
@@ -45,6 +48,10 @@ public final class BlockTable {
     public long offsetOf(String channel, int b) { return off.get(channel)[b]; }
     public long lengthOf(String channel, int b) { return len.get(channel)[b]; }
     public boolean hasCodecs() { return codec != null; }
+    /** The index's channel columns, in column order (M101). */
+    public List<String> channels() { return channels; }
+    /** True when the index carries the tags (off, len, codec) triple. */
+    public boolean hasTagsColumns() { return channels.contains("tags"); }
     /** Codec id of a channel in a block; 0 without codec columns. */
     public int codecOf(String channel, int b) {
         return codec != null ? codec.get(channel)[b] : 0;
@@ -59,6 +66,13 @@ public final class BlockTable {
         boolean hasCodecs = !rows.isEmpty()
             && rows.get(0).containsKey(GenomicBlocks.BLOCK_CHANNELS.get(0) + "_codec");
         BlockTable t = new BlockTable(rows.size(), hasCodecs);
+        // An optional channel's columns are absent from runs that do
+        // not carry it (M101: tags): every block then has an empty range.
+        List<String> present = new java.util.ArrayList<>(GenomicBlocks.REQUIRED_BLOCK_CHANNELS);
+        for (String ch : GenomicBlocks.OPTIONAL_BLOCK_CHANNELS) {
+            if (!rows.isEmpty() && rows.get(0).containsKey(ch + "_off")) present.add(ch);
+        }
+        t.channels = List.copyOf(present);
         for (String ch : GenomicBlocks.BLOCK_CHANNELS) {
             t.off.put(ch, new long[rows.size()]);
             t.len.put(ch, new long[rows.size()]);
@@ -70,7 +84,7 @@ public final class BlockTable {
             t.nReads[i] = (int) num(r, "n_reads");
             t.baseStart[i] = num(r, "base_start");
             t.nBases[i] = num(r, "n_bases");
-            for (String ch : GenomicBlocks.BLOCK_CHANNELS) {
+            for (String ch : t.channels) {
                 t.off.get(ch)[i] = num(r, ch + "_off");
                 t.len.get(ch)[i] = num(r, ch + "_len");
                 if (hasCodecs) t.codec.get(ch)[i] = (int) num(r, ch + "_codec");

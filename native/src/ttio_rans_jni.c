@@ -1176,3 +1176,212 @@ Java_global_thalion_ttio_codecs_TtioRansNative_decodeNameTokV2Native(
     free(out_names);
     return jout;
 }
+
+/* ──────────────────────────────────────────────────────────────────────
+ * SAM_TAGS (codec id 18, M101) JNI bindings.
+ * Java signature:
+ *   private static native byte[] encodeSamTagsNative(
+ *     byte[] tags, long[] tagOffsets,
+ *     byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+ *     long[] positions, short[] chromIds, byte[][] refs);
+ *   private static native Object[] decodeSamTagsNative(
+ *     byte[] encoded, int nReads,
+ *     byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
+ *     long[] positions, short[] chromIds, byte[][] refs);
+ *   - text travels as UTF-8 bytes plus n + 1 offsets, not as jstring:
+ *     modified UTF-8 would change tag text holding a NUL or a
+ *     supplementary character;
+ *   - refs == null, or no non-null entry, disables MD/NM derivation and
+ *     the other context arrays may then be null;
+ *   - decode returns Object[2]: byte[] text, long[] offsets (n + 1).
+ * ────────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    ttio_sam_tags_ctx ctx;
+    jbyteArray  seq_arr;  jbyte  *seq;
+    jlongArray  so_arr;   jlong  *so;
+    jbyteArray  cig_arr;  jbyte  *cig;
+    jlongArray  co_arr;   jlong  *co;
+    jlongArray  pos_arr;  jlong  *pos;
+    jshortArray chr_arr;  jshort *chr;
+    jsize       n_refs;
+    jbyteArray *ref_objs;
+    jbyte     **ref_elems;
+    const uint8_t **ref_ptrs;
+    uint64_t   *ref_lens;
+} sam_tags_jctx;
+
+static void sam_tags_jctx_release(JNIEnv *env, sam_tags_jctx *j) {
+    if (j->seq) (*env)->ReleaseByteArrayElements(env, j->seq_arr, j->seq, JNI_ABORT);
+    if (j->so)  (*env)->ReleaseLongArrayElements(env, j->so_arr, j->so, JNI_ABORT);
+    if (j->cig) (*env)->ReleaseByteArrayElements(env, j->cig_arr, j->cig, JNI_ABORT);
+    if (j->co)  (*env)->ReleaseLongArrayElements(env, j->co_arr, j->co, JNI_ABORT);
+    if (j->pos) (*env)->ReleaseLongArrayElements(env, j->pos_arr, j->pos, JNI_ABORT);
+    if (j->chr) (*env)->ReleaseShortArrayElements(env, j->chr_arr, j->chr, JNI_ABORT);
+    for (jsize i = 0; i < j->n_refs; i++) {
+        if (j->ref_elems && j->ref_elems[i]) {
+            (*env)->ReleaseByteArrayElements(env, j->ref_objs[i], j->ref_elems[i], JNI_ABORT);
+        }
+        if (j->ref_objs && j->ref_objs[i]) (*env)->DeleteLocalRef(env, j->ref_objs[i]);
+    }
+    free(j->ref_objs); free(j->ref_elems); free((void *)j->ref_ptrs); free(j->ref_lens);
+    memset(j, 0, sizeof(*j));
+}
+
+/* Pin the derivation context. Returns 0, or -1 with a Java exception
+ * pending (missing context arrays, or out of memory). */
+static int sam_tags_jctx_fill(JNIEnv *env, sam_tags_jctx *j, jlong n_reads,
+                              jbyteArray seq_arr, jlongArray so_arr,
+                              jbyteArray cig_arr, jlongArray co_arr,
+                              jlongArray pos_arr, jshortArray chr_arr,
+                              jobjectArray refs_arr) {
+    memset(j, 0, sizeof(*j));
+    j->ctx.n_reads = (uint64_t)n_reads;
+    jsize n_refs = refs_arr ? (*env)->GetArrayLength(env, refs_arr) : 0;
+    int any = 0;
+    for (jsize i = 0; i < n_refs && !any; i++) {
+        jobject r = (*env)->GetObjectArrayElement(env, refs_arr, i);
+        if (r) { any = 1; (*env)->DeleteLocalRef(env, r); }
+    }
+    if (!any) return 0;                      /* no derivation: n_refs = 0 */
+    if (n_reads > 0 && (!seq_arr || !so_arr || !cig_arr || !co_arr
+                        || !pos_arr || !chr_arr)) {
+        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/IllegalArgumentException"),
+            "MD/NM derivation needs sequences, cigars, positions and chrom ids");
+        return -1;
+    }
+    j->ref_objs  = (jbyteArray *)calloc((size_t)n_refs, sizeof(jbyteArray));
+    j->ref_elems = (jbyte **)calloc((size_t)n_refs, sizeof(jbyte *));
+    j->ref_ptrs  = (const uint8_t **)calloc((size_t)n_refs, sizeof(uint8_t *));
+    j->ref_lens  = (uint64_t *)calloc((size_t)n_refs, sizeof(uint64_t));
+    j->n_refs = n_refs;
+    if (!j->ref_objs || !j->ref_elems || !j->ref_ptrs || !j->ref_lens) {
+        sam_tags_jctx_release(env, j);
+        (*env)->ThrowNew(env, (*env)->FindClass(env, "java/lang/OutOfMemoryError"),
+            "sam_tags: JNI alloc");
+        return -1;
+    }
+    for (jsize i = 0; i < n_refs; i++) {
+        j->ref_objs[i] = (jbyteArray)(*env)->GetObjectArrayElement(env, refs_arr, i);
+        if (!j->ref_objs[i]) continue;
+        jsize len = (*env)->GetArrayLength(env, j->ref_objs[i]);
+        if (len == 0) continue;
+        j->ref_elems[i] = (*env)->GetByteArrayElements(env, j->ref_objs[i], NULL);
+        j->ref_ptrs[i] = (const uint8_t *)j->ref_elems[i];
+        j->ref_lens[i] = (uint64_t)len;
+    }
+    if (seq_arr) { j->seq_arr = seq_arr; j->seq = (*env)->GetByteArrayElements(env, seq_arr, NULL); }
+    if (so_arr)  { j->so_arr = so_arr;   j->so  = (*env)->GetLongArrayElements(env, so_arr, NULL); }
+    if (cig_arr) { j->cig_arr = cig_arr; j->cig = (*env)->GetByteArrayElements(env, cig_arr, NULL); }
+    if (co_arr)  { j->co_arr = co_arr;   j->co  = (*env)->GetLongArrayElements(env, co_arr, NULL); }
+    if (pos_arr) { j->pos_arr = pos_arr; j->pos = (*env)->GetLongArrayElements(env, pos_arr, NULL); }
+    if (chr_arr) { j->chr_arr = chr_arr; j->chr = (*env)->GetShortArrayElements(env, chr_arr, NULL); }
+    j->ctx.sequences     = (const uint8_t *)j->seq;
+    j->ctx.seq_offsets   = (const uint64_t *)j->so;
+    j->ctx.cigars        = (const uint8_t *)j->cig;
+    j->ctx.cigar_offsets = (const uint64_t *)j->co;
+    j->ctx.positions     = (const int64_t *)j->pos;
+    j->ctx.chrom_ids     = (const uint16_t *)j->chr;
+    j->ctx.refs          = j->ref_ptrs;
+    j->ctx.ref_lengths   = j->ref_lens;
+    j->ctx.n_refs        = (uint32_t)n_refs;
+    return 0;
+}
+
+static void sam_tags_throw(JNIEnv *env, const char *what, int rc) {
+    char msg[160];
+    snprintf(msg, sizeof(msg), "sam_tags %s failed: rc=%d%s", what, rc,
+             rc == TTIO_RANS_ERR_PARAM
+                 ? " (invalid parameters, a NUL in the tag text, or bad offsets)"
+             : rc == TTIO_RANS_ERR_CORRUPT ? " (corrupt SAM_TAGS blob)" : "");
+    const char *cls = rc == TTIO_RANS_ERR_ALLOC ? "java/lang/OutOfMemoryError"
+                                                : "java/lang/IllegalArgumentException";
+    (*env)->ThrowNew(env, (*env)->FindClass(env, cls), msg);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_global_thalion_ttio_codecs_TtioRansNative_encodeSamTagsNative(
+    JNIEnv *env, jclass cls,
+    jbyteArray tags_arr, jlongArray tag_offsets_arr,
+    jbyteArray seq_arr, jlongArray so_arr,
+    jbyteArray cig_arr, jlongArray co_arr,
+    jlongArray pos_arr, jshortArray chr_arr,
+    jobjectArray refs_arr)
+{
+    (void)cls;
+    jsize n1 = (*env)->GetArrayLength(env, tag_offsets_arr);
+    jlong n_reads = n1 > 0 ? (jlong)n1 - 1 : 0;
+    sam_tags_jctx j;
+    if (sam_tags_jctx_fill(env, &j, n_reads, seq_arr, so_arr, cig_arr, co_arr,
+                           pos_arr, chr_arr, refs_arr) != 0) {
+        return NULL;
+    }
+    jbyte *tags = (*env)->GetByteArrayElements(env, tags_arr, NULL);
+    jlong *toff = (*env)->GetLongArrayElements(env, tag_offsets_arr, NULL);
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    int rc = ttio_sam_tags_encode(&j.ctx, (const uint8_t *)tags,
+                                  (const uint64_t *)toff, &out, &out_len);
+    (*env)->ReleaseByteArrayElements(env, tags_arr, tags, JNI_ABORT);
+    (*env)->ReleaseLongArrayElements(env, tag_offsets_arr, toff, JNI_ABORT);
+    sam_tags_jctx_release(env, &j);
+    if (rc != 0) {
+        sam_tags_throw(env, "encode", rc);
+        return NULL;
+    }
+    jbyteArray result = (*env)->NewByteArray(env, (jsize)out_len);
+    if (result && out_len > 0) {
+        (*env)->SetByteArrayRegion(env, result, 0, (jsize)out_len, (const jbyte *)out);
+    }
+    ttio_sam_tags_free(out);
+    return result;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_global_thalion_ttio_codecs_TtioRansNative_decodeSamTagsNative(
+    JNIEnv *env, jclass cls,
+    jbyteArray encoded_arr, jint n_reads,
+    jbyteArray seq_arr, jlongArray so_arr,
+    jbyteArray cig_arr, jlongArray co_arr,
+    jlongArray pos_arr, jshortArray chr_arr,
+    jobjectArray refs_arr)
+{
+    (void)cls;
+    if (n_reads < 0) {
+        sam_tags_throw(env, "decode", TTIO_RANS_ERR_PARAM);
+        return NULL;
+    }
+    sam_tags_jctx j;
+    if (sam_tags_jctx_fill(env, &j, (jlong)n_reads, seq_arr, so_arr, cig_arr, co_arr,
+                           pos_arr, chr_arr, refs_arr) != 0) {
+        return NULL;
+    }
+    jsize enc_len = (*env)->GetArrayLength(env, encoded_arr);
+    jbyte *enc = (*env)->GetByteArrayElements(env, encoded_arr, NULL);
+    uint64_t *off = (uint64_t *)calloc((size_t)n_reads + 1, sizeof(uint64_t));
+    uint8_t *text = NULL;
+    int rc = off ? ttio_sam_tags_decode(&j.ctx, (const uint8_t *)enc, (size_t)enc_len,
+                                        &text, off)
+                 : TTIO_RANS_ERR_ALLOC;
+    (*env)->ReleaseByteArrayElements(env, encoded_arr, enc, JNI_ABORT);
+    sam_tags_jctx_release(env, &j);
+    if (rc != 0) {
+        free(off);
+        sam_tags_throw(env, "decode", rc);
+        return NULL;
+    }
+    jsize text_len = (jsize)off[n_reads];
+    jclass object_class = (*env)->FindClass(env, "java/lang/Object");
+    jobjectArray result = (*env)->NewObjectArray(env, 2, object_class, NULL);
+    jbyteArray text_arr = (*env)->NewByteArray(env, text_len);
+    if (text_len > 0) {
+        (*env)->SetByteArrayRegion(env, text_arr, 0, text_len, (const jbyte *)text);
+    }
+    (*env)->SetObjectArrayElement(env, result, 0, text_arr);
+    jlongArray off_arr = (*env)->NewLongArray(env, n_reads + 1);
+    (*env)->SetLongArrayRegion(env, off_arr, 0, n_reads + 1, (const jlong *)off);
+    (*env)->SetObjectArrayElement(env, result, 1, off_arr);
+    ttio_sam_tags_free(text);
+    free(off);
+    return result;
+}

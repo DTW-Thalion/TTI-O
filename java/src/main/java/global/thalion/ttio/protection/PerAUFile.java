@@ -78,7 +78,18 @@ public final class PerAUFile {
     public record DecryptedRun(Map<String, byte[]> channels,
                                  List<AUHeaderPlaintext> auHeaders,
                                  GenomicIndexPlain indexPlain,
-                                 boolean isGenomic) {
+                                 boolean isGenomic,
+                                 /** M101: a genomic run's SAM tag text, one
+                                  *  string per read; null when the run
+                                  *  carries no tags. */
+                                 List<String> tags) {
+        public DecryptedRun(Map<String, byte[]> channels,
+                              List<AUHeaderPlaintext> auHeaders,
+                              GenomicIndexPlain indexPlain,
+                              boolean isGenomic) {
+            this(channels, auHeaders, indexPlain, isGenomic, null);
+        }
+
         public DecryptedRun(Map<String, byte[]> channels,
                               List<AUHeaderPlaintext> auHeaders) {
             this(channels, auHeaders, null, false);
@@ -738,6 +749,16 @@ public final class PerAUFile {
         try (StorageGroup run = gRuns.openGroup(runName);
              StorageGroup sig = run.openGroup("signal_channels");
              StorageGroup idx = run.openGroup("genomic_index")) {
+            if (sig.hasChild("tags")) {
+                // M101: tags are encrypted with the bases; only the
+                // blocks_v1 walker carries them, and leaving them in
+                // plaintext would expose MD strings.
+                throw new IllegalArgumentException(
+                    "per-AU encryption: genomic run '" + runName + "' uses the "
+                    + "whole-channel layout and carries SAM tags; per-AU "
+                    + "protection of tags needs the blocks_v1 layout. Rewrite "
+                    + "the run without optLegacyWholeChannel.");
+            }
 
             int[] lengths = readInts(idx, "lengths");
             // offsets is no longer stored on disk by default;
@@ -855,7 +876,14 @@ public final class PerAUFile {
                     PerAUEncryption.decryptChannelFromSegments(
                         segs, datasetId, cname, key, 1));
             }
-            return new DecryptedRun(channels, null, null, /* isGenomic */ true);
+            // M101: tags come back as one string per read.
+            List<String> tags = null;
+            if (sig.hasChild("tags_segments")) {
+                List<ChannelSegment> segs = readChannelSegments(sig, "tags_segments");
+                tags = splitTagTexts(PerAUEncryption.decryptChannelFromSegments(
+                    segs, datasetId, "tags", key, 1), segs);
+            }
+            return new DecryptedRun(channels, null, null, /* isGenomic */ true, tags);
         }
     }
 
@@ -875,6 +903,13 @@ public final class PerAUFile {
         try (StorageGroup run = gRuns.openGroup(runName);
              StorageGroup sig = run.openGroup("signal_channels");
              StorageGroup idx = run.openGroup("genomic_index")) {
+            if (sig.hasChild("tags")) {
+                // M101: region keys do not cover the SAM tags; refuse
+                // rather than leave MD strings in plaintext.
+                throw new IllegalArgumentException(
+                    "per-AU region encryption: genomic run '" + runName + "' carries "
+                    + "SAM tags, which region keys do not protect; use encryptFile");
+            }
 
             int[] lengths = readInts(idx, "lengths");
             // offsets is no longer stored on disk by default;
@@ -1176,8 +1211,23 @@ public final class PerAUFile {
     // index is rewritten to the ranges actually written instead of
     // refusing, keeping the file consistent and readable.
 
+    // M101: the SAM tags are encrypted with the bases they describe (an
+    // MD string lists the read's mismatches). One AU per read, the
+    // plaintext being the read's UTF-8 tag text; "tags" is handled as
+    // text, not bytes, and is never injected into a block view.
     private static final List<String> BLOCKS_V1_CHANNELS =
-        List.of("sequences", "qualities");
+        List.of("sequences", "qualities", "tags");
+
+    /** Split decrypted tag text by the segments' plaintext lengths. */
+    private static List<String> splitTagTexts(byte[] flat, List<ChannelSegment> segs) {
+        List<String> out = new ArrayList<>(segs.size());
+        int p = 0;
+        for (ChannelSegment s : segs) {
+            out.add(new String(flat, p, s.length(), StandardCharsets.UTF_8));
+            p += s.length();
+        }
+        return out;
+    }
 
     private static boolean isBlocksV1(StorageGroup gRuns, String runName) {
         try (StorageGroup run = gRuns.openGroup(runName)) {
@@ -1276,15 +1326,24 @@ public final class PerAUFile {
 
     private record BlockRun(WrittenGenomicRun run, byte[] seq, byte[] qual) {}
 
+    private static BlockRun blocksV1BlockRun(GenomicRun rd,
+            StorageGroup runGroup, StorageGroup study, BlockTable t,
+            int b, long indexBase) {
+        return blocksV1BlockRun(rd, runGroup, study, t, b, indexBase, null);
+    }
+
     /** Collect reads {@code [indexBase, indexBase+nn)} from an open
      *  reader into a per-block {@link WrittenGenomicRun}. The encrypt
      *  walker reads block {@code b} through the run's own reader
      *  ({@code indexBase = readStartAt(b)}); the decrypt walker reads
      *  a materialised one-block view ({@code indexBase = 0}). */
+    /** {@code tags}, when given, are the block's decrypted tag texts
+     *  (M101); otherwise each read's tags come from the reader. */
     private static BlockRun blocksV1BlockRun(GenomicRun rd,
             StorageGroup runGroup, StorageGroup study, BlockTable t,
-            int b, long indexBase) {
+            int b, long indexBase, List<String> tags) {
         int nn = t.nReadsAt(b);
+        List<String> readTags = new ArrayList<>(nn);
         long[] positions = new long[nn];
         byte[] mapqs = new byte[nn];
         int[] flags = new int[nn];
@@ -1314,6 +1373,7 @@ public final class PerAUFile {
             names.add(r.readName());
             mateChroms.add(r.mateChromosome());
             chroms.add(r.chromosome());
+            readTags.add(r.tags());
         }
 
         String refUri = rd.referenceUri();
@@ -1349,7 +1409,8 @@ public final class PerAUFile {
             offsets, lengths, cigars, names, mateChroms, matePos, tlens,
             chroms, Compression.ZLIB, overrides,
             List.of(), false, refSeqs, null, null,
-            disableV5, false, rd.getReadRole(), sliceBytes);
+            disableV5, false, rd.getReadRole(), sliceBytes,
+            tags != null ? tags : readTags);
         return new BlockRun(block, seqBytes, qualBytes);
     }
 
@@ -1390,6 +1451,7 @@ public final class PerAUFile {
             GenomicRun rd = GenomicRun.readFrom(runGroup, runName);
 
             Map<String, StorageDataset> segDs = new LinkedHashMap<>();
+            long tagOffset = 0;   // global plaintext offset of the tags channel
             try {
                 for (String ch : channels) {
                     String segName = ch + "_segments";
@@ -1408,13 +1470,34 @@ public final class PerAUFile {
                         cum += blkLens[i];
                     }
                     for (String ch : channels) {
-                        byte[] plain = ch.equals("sequences")
-                            ? br.seq() : br.qual();
+                        byte[] plain;
+                        long[] chLocal = local;
+                        int[] chLens = blkLens;
+                        long base = t.baseStartAt(b);
+                        if (ch.equals("tags")) {
+                            List<String> texts = br.run().tags();
+                            int nn = t.nReadsAt(b);
+                            chLocal = new long[nn];
+                            chLens = new int[nn];
+                            java.io.ByteArrayOutputStream tb =
+                                new java.io.ByteArrayOutputStream();
+                            for (int i = 0; i < nn; i++) {
+                                byte[] tx = (texts == null ? "" : texts.get(i))
+                                    .getBytes(StandardCharsets.UTF_8);
+                                chLocal[i] = tb.size();
+                                chLens[i] = tx.length;
+                                tb.writeBytes(tx);
+                            }
+                            plain = tb.toByteArray();
+                            base = tagOffset;
+                            tagOffset += plain.length;
+                        } else {
+                            plain = ch.equals("sequences") ? br.seq() : br.qual();
+                        }
                         List<ChannelSegment> segs =
                             PerAUEncryption.encryptChannelToSegments(
-                                plain, local, blkLens, datasetId, ch,
-                                key, 1, (int) t.readStartAt(b),
-                                t.baseStartAt(b));
+                                plain, chLocal, chLens, datasetId, ch,
+                                key, 1, (int) t.readStartAt(b), base);
                         List<Object[]> rows =
                             new ArrayList<>(segs.size());
                         for (ChannelSegment s : segs) {
@@ -1479,13 +1562,20 @@ public final class PerAUFile {
                     long r0 = t.readStartAt(b);
                     int nn = t.nReadsAt(b);
                     Map<String, byte[]> decrypted = new LinkedHashMap<>();
+                    List<String> tagTexts = null;
                     for (String ch : channels) {
                         List<ChannelSegment> segs =
                             readChannelSegmentsSlice(sig, ch + "_segments",
                                                      r0, nn);
-                        decrypted.put(ch,
-                            PerAUEncryption.decryptChannelFromSegments(
-                                segs, datasetId, ch, key, 1, (int) r0));
+                        byte[] flat = PerAUEncryption.decryptChannelFromSegments(
+                            segs, datasetId, ch, key, 1, (int) r0);
+                        if (ch.equals("tags")) {
+                            // M101: one string per read, straight into
+                            // the block run (never a codec-0 dataset).
+                            tagTexts = splitTagTexts(flat, segs);
+                        } else {
+                            decrypted.put(ch, flat);
+                        }
                     }
 
                     BlockView.Handle view = BlockView.materialise(
@@ -1494,7 +1584,7 @@ public final class PerAUFile {
                     try {
                         StorageGroup viewSig =
                             view.group().openGroup("signal_channels");
-                        for (String ch : channels) {
+                        for (String ch : decrypted.keySet()) {
                             byte[] raw = decrypted.get(ch);
                             try (StorageDataset ds = viewSig.createDataset(
                                     ch, Precision.UINT8, raw.length, 0,
@@ -1505,7 +1595,8 @@ public final class PerAUFile {
                         }
                         GenomicRun rd =
                             GenomicRun.readFrom(view.group(), "block");
-                        br = blocksV1BlockRun(rd, runGroup, study, t, b, 0);
+                        br = blocksV1BlockRun(rd, runGroup, study, t, b, 0,
+                                              tagTexts);
                     } finally {
                         view.discard();
                     }
@@ -1533,6 +1624,11 @@ public final class PerAUFile {
                             pos, got.length,
                             blobs.codecs().getOrDefault(ch, 0) });
                         StorageDataset ds = newDs.get(ch);
+                        // The channel dataset is created at its first
+                        // non-empty blob, with that blob's codec, as the
+                        // stream writer does (M101: tags first appearing
+                        // after untagged blocks).
+                        if (ds == null && got.length == 0) continue;
                         if (ds == null) {
                             StorageGroup parent;
                             String dsName;
@@ -1585,26 +1681,27 @@ public final class PerAUFile {
     @SuppressWarnings("unchecked")
     private static void rewriteBlocksIndex(StorageGroup runGroup,
             List<String> channels, Map<String, List<long[]>> newRanges) {
-        List<String> order = GenomicBlocks.BLOCK_CHANNELS;
-        int codecBase = 4 + 2 * order.size();
         try (StorageGroup blocks = runGroup.openGroup("blocks")) {
             List<Object[]> rows;
             try (StorageDataset ds = blocks.openDataset("index")) {
                 rows = (List<Object[]>) ds.readAll();
             }
+            // M101: an index with the tags triple keeps it.
+            boolean withTags = !rows.isEmpty()
+                && rows.get(0).length == GenomicStreamWriter.INDEX_FIELDS_WITH_TAGS.size();
             for (int b = 0; b < rows.size(); b++) {
                 Object[] row = rows.get(b);
                 for (String ch : channels) {
-                    int ci = order.indexOf(ch);
                     long[] r = newRanges.get(ch).get(b);
-                    row[4 + 2 * ci] = r[0];
-                    row[4 + 2 * ci + 1] = r[1];
-                    row[codecBase + ci] = (int) r[2];
+                    int oc = GenomicStreamWriter.offsetColumn(ch);
+                    row[oc] = r[0];
+                    row[oc + 1] = r[1];
+                    row[GenomicStreamWriter.codecColumn(ch)] = (int) r[2];
                 }
             }
             blocks.deleteChild("index");
             try (StorageDataset out = blocks.createCompoundDataset(
-                    "index", GenomicStreamWriter.INDEX_FIELDS, 0,
+                    "index", GenomicStreamWriter.indexFields(withTags), 0,
                     true, 1024)) {
                 if (!rows.isEmpty()) out.append(rows);
             }

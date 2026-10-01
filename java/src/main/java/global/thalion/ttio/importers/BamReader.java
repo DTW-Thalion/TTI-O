@@ -244,6 +244,7 @@ public class BamReader {
                 throw new IOException(
                     "Failed to iterate records in " + path + ": " + e.getMessage(), e);
             }
+            SamTextTags lines = SamTextTags.open(path, reader, region);
             try {
                 while (true) {
                     SAMRecord rec;
@@ -255,7 +256,7 @@ public class BamReader {
                             "Malformed record in " + path + ": " + e.getMessage(), e);
                     }
 
-                    addRecord(acc, rec);
+                    addRecord(acc, rec, lines);
                     if (acc.size() % PROGRESS_INTERVAL_READS == 0) {
                         progress.onProgress(acc.size(), -1L);
                     }
@@ -264,6 +265,7 @@ public class BamReader {
                 if (it instanceof htsjdk.samtools.util.CloseableIterator<?>) {
                     ((htsjdk.samtools.util.CloseableIterator<?>) it).close();
                 }
+                if (lines != null) lines.close();
             }
         }
 
@@ -348,7 +350,14 @@ public class BamReader {
             throw new IOException(
                 "Failed to iterate records in " + path + ": " + e.getMessage(), e);
         }
-        return new BatchIterator(reader, it, batchReads, referenceUri, platform, sample, prov);
+        SamTextTags lines;
+        try {
+            lines = SamTextTags.open(path, reader, region);
+        } catch (IOException e) {
+            reader.close();
+            throw e;
+        }
+        return new BatchIterator(reader, it, batchReads, referenceUri, platform, sample, prov, lines);
     }
 
     /** {@link #iterBatches} as a {@link GenomicStreamSource}. */
@@ -379,15 +388,17 @@ public class BamReader {
         private final String referenceUri, platform, sample;
         private final List<ProvenanceRecord> prov;
         private final BatchAccumulator acc = new BatchAccumulator();
+        private final SamTextTags lines;
         private WrittenGenomicRun next;
         private boolean done;
 
         BatchIterator(SamReader reader, Iterator<SAMRecord> records, int batchReads,
                       String referenceUri, String platform, String sample,
-                      List<ProvenanceRecord> prov) {
+                      List<ProvenanceRecord> prov, SamTextTags lines) {
             this.reader = reader; this.records = records; this.batchReads = batchReads;
             this.referenceUri = referenceUri; this.platform = platform; this.sample = sample;
             this.prov = prov;
+            this.lines = lines;
         }
 
         @Override public boolean hasNext() {
@@ -395,7 +406,7 @@ public class BamReader {
             if (done) return false;
             try {
                 while (acc.size() < batchReads && records.hasNext()) {
-                    addRecord(acc, records.next());
+                    addRecord(acc, records.next(), lines);
                 }
             } catch (IOException e) {
                 throw new java.io.UncheckedIOException(e);
@@ -422,13 +433,27 @@ public class BamReader {
             if (done) return;
             done = true;
             if (records instanceof htsjdk.samtools.util.CloseableIterator<?> c) c.close();
+            if (lines != null) lines.close();
             try { reader.close(); } catch (IOException ignored) { }
         }
     }
 
     /** One htsjdk record into the accumulator (SEQ {@code *} → empty
-     *  bytes; QUAL {@code *} with a sequence → 0xFF fill; Phred+33). */
-    private static void addRecord(BatchAccumulator acc, SAMRecord rec) throws IOException {
+     *  bytes; QUAL {@code *} with a sequence → 0xFF fill; Phred+33).
+     *  M101: the optional fields are kept as samtools prints them, from
+     *  the record's raw aux bytes (BAM), its own text line ({@code lines},
+     *  SAM) or its attributes (CRAM); see {@link SamTagText}. */
+    private static void addRecord(BatchAccumulator acc, SAMRecord rec, SamTextTags lines)
+            throws IOException {
+        // Before any getter that could re-encode the record's bytes.
+        String tagText;
+        try {
+            tagText = lines != null ? SamTagText.normalizeSamText(lines.next())
+                                    : SamTagText.fromRecord(rec);
+        } catch (RuntimeException e) {
+            throw new IOException("Malformed optional fields in record "
+                + rec.getReadName() + ": " + e.getMessage(), e);
+        }
         String qname = rec.getReadName() != null ? rec.getReadName() : "*";
         int flag = rec.getFlags();
         String rname = rec.getReferenceName() != null ? rec.getReferenceName() : "*";
@@ -462,7 +487,51 @@ public class BamReader {
                     + ": SEQ=" + seqBytes.length + " QUAL=" + qualBytes.length);
             }
         }
-        acc.add(qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seqBytes, qualBytes);
+        acc.add(qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seqBytes, qualBytes,
+                tagText);
+    }
+
+    /** The optional-field columns of a SAM text file's alignment lines,
+     *  read alongside htsjdk's record iterator (htsjdk keeps attributes
+     *  sorted by tag, so their record order is only in the text). One
+     *  line per record; header lines ({@code @}) and blank lines are
+     *  skipped as htsjdk skips them. */
+    static final class SamTextTags implements AutoCloseable {
+        private final java.io.BufferedReader in;
+
+        private SamTextTags(java.io.BufferedReader in) { this.in = in; }
+
+        /** A reader for {@code path} when htsjdk reads it as SAM text
+         *  without a region; {@code null} otherwise (BAM records carry
+         *  their raw aux bytes). */
+        static SamTextTags open(Path path, SamReader reader, String region) throws IOException {
+            if (region != null || reader.type() != SamReader.Type.SAM_TYPE) return null;
+            java.io.InputStream raw = new java.io.BufferedInputStream(Files.newInputStream(path));
+            raw.mark(2);
+            int b0 = raw.read(), b1 = raw.read();
+            raw.reset();
+            if (b0 == 0x1f && b1 == 0x8b) raw = new java.util.zip.GZIPInputStream(raw, 1 << 16);
+            return new SamTextTags(new java.io.BufferedReader(
+                new java.io.InputStreamReader(raw, StandardCharsets.UTF_8), 1 << 16));
+        }
+
+        /** Columns 12+ of the next alignment line ("" when it has none). */
+        String next() throws IOException {
+            String line;
+            do {
+                line = in.readLine();
+                if (line == null) throw new IOException("SAM text ended before its records");
+            } while (line.isEmpty() || line.charAt(0) == '@');
+            int tabs = 0;
+            for (int i = 0; i < line.length(); i++) {
+                if (line.charAt(i) == '\t' && ++tabs == 11) return line.substring(i + 1);
+            }
+            return "";
+        }
+
+        @Override public void close() {
+            try { in.close(); } catch (IOException ignored) { }
+        }
     }
 
     // ------------------------------------------------------------------

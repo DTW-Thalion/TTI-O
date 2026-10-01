@@ -1112,8 +1112,7 @@ public final class TransportWriter implements AutoCloseable {
             writeDatasetHeader(id, e.getKey(),
                     grun.acquisitionMode().ordinal(),
                     "TTIOGenomicRead",
-                    List.of("sequences", "qualities",
-                            "cigar", "read_name", "mate_chromosome"),
+                    genomicChannelNames(grun),
                     genomicRunMetadataJson(grun),
                     grun.readCount());
             id++;
@@ -1188,8 +1187,7 @@ public final class TransportWriter implements AutoCloseable {
         writeDatasetHeader(datasetId, name,
                 run.acquisitionMode().ordinal(),
                 "TTIOGenomicRead",
-                List.of("sequences", "qualities",
-                        "cigar", "read_name", "mate_chromosome"),
+                genomicChannelNames(run),
                 genomicRunMetadataJson(run),
                 run.readCount());
         emitGenomicRunAccessUnits(datasetId, run);
@@ -1229,6 +1227,16 @@ public final class TransportWriter implements AutoCloseable {
         }
     }
 
+    /** The DatasetHeader channel list of a genomic run: the five M89
+     *  channels, plus {@code tags} (transport-spec 4.3.1) when the run
+     *  carries SAM tags (M101), so a tag-less run's stream is unchanged. */
+    static List<String> genomicChannelNames(GenomicRun run) {
+        List<String> names = new ArrayList<>(List.of("sequences", "qualities",
+            "cigar", "read_name", "mate_chromosome"));
+        if (run.hasTagsChannel()) names.add("tags");
+        return names;
+    }
+
     /** Build the per-read {@link AccessUnit} list for {@code run},
      *  matching the layout {@link #emitGenomicRunAccessUnits} writes
      *  to the wire. Extracted in #141 so {@link DatasetWalker} can
@@ -1254,6 +1262,7 @@ public final class TransportWriter implements AutoCloseable {
         byte[] qualAll = n > 0 ? run.qualitiesFull() : new byte[0];
         java.util.List<String> namesAll = run.readNamesAll();
         global.thalion.ttio.genomics.GenomicIndex idx = run.index();
+        boolean hasTags = run.hasTagsChannel();
         List<AccessUnit> out = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             long offset = idx.offsetAt(i);
@@ -1301,6 +1310,12 @@ public final class TransportWriter implements AutoCloseable {
                     compressionNone, nameBytes.length, nameBytes));
             channels.add(new ChannelData("mate_chromosome", precisionUint8,
                     compressionNone, mateChrBytes.length, mateChrBytes));
+            if (hasTags) {
+                // M101: the read's SAM tag text, UTF-8, uncompressed.
+                byte[] tagBytes = run.tagsAt(i).getBytes(StandardCharsets.UTF_8);
+                channels.add(new ChannelData("tags", precisionUint8,
+                        compressionNone, tagBytes.length, tagBytes));
+            }
             AccessUnit au = new AccessUnit(
                     5,                  // spectrum_class GenomicRead
                     acqMode,

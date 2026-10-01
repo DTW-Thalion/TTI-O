@@ -100,8 +100,34 @@ public final class ImportedDataset {
                 }
                 for (GenomicStreamSource src : genomicStreams.values()) src.writeInto(study, progress);
                 for (SpectralStreamSource src : spectralStreams.values()) src.writeInto(study, progress);
+                if (!genomicStreams.isEmpty()) flagSamTags(root, study);
             }
         }
         return written;
+    }
+
+    /** Add {@code opt_sam_tags} once a streamed genomic run turned out
+     *  to carry SAM tags (M101); the static write could not know. */
+    private void flagSamTags(global.thalion.ttio.providers.StorageGroup root,
+                             global.thalion.ttio.providers.StorageGroup study) {
+        if (!study.hasChild("genomic_runs")) return;
+        boolean any = false;
+        try (var runs = study.openGroup("genomic_runs")) {
+            for (GenomicStreamSource src : genomicStreams.values()) {
+                if (!runs.hasChild(src.name())) continue;
+                try (var rg = runs.openGroup(src.name())) {
+                    if (rg.hasChild("signal_channels")) {
+                        try (var sc = rg.openGroup("signal_channels")) {
+                            any |= sc.hasChild("tags");
+                        }
+                    }
+                }
+            }
+        }
+        if (!any) return;
+        global.thalion.ttio.FeatureFlags flags = global.thalion.ttio.FeatureFlags.readFrom(root);
+        if (!flags.has(global.thalion.ttio.FeatureFlags.OPT_SAM_TAGS)) {
+            flags.with(global.thalion.ttio.FeatureFlags.OPT_SAM_TAGS).writeTo(root);
+        }
     }
 }

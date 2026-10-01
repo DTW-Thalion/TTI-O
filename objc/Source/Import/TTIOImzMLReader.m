@@ -157,6 +157,12 @@ const NSUInteger TTIOImzMLReaderProgressIntervalPixels = 100;
     BOOL _inScan;
     NSString *_currentArrayKind;     // "mz" / "intensity" / @""
     NSString *_currentArrayPrecision; // "32" / "64"
+    // <referenceableParamGroup id=...> cvParams, applied wherever a
+    // <referenceableParamGroupRef ref=...> appears. Writers commonly
+    // declare the array kind / precision / compression of every
+    // binaryDataArray this way (e.g. the HR2MSI PXD001283 files).
+    NSMutableDictionary<NSString *, NSMutableArray<NSDictionary *> *> *_paramGroups;
+    NSMutableArray<NSDictionary *> *_currentGroup;
 }
 
 #pragma mark - CV term constants
@@ -241,6 +247,7 @@ static NSString *normaliseUUID(NSString *value) {
     reader->_state = [[TTIOImzMLReaderState alloc] init];
     reader->_currentArrayKind = @"";
     reader->_currentArrayPrecision = @"64";
+    reader->_paramGroups = [NSMutableDictionary dictionary];
 
     NSError *xmlError = nil;
     if (![TTIOXMLStreamParser parseFileAtPath:imzmlPath
@@ -350,7 +357,15 @@ static NSString *normaliseUUID(NSString *value) {
         _currentArrayKind = @"";
     } else if ([elementName isEqualToString:@"scan"]) {
         _inScan = YES;
+    } else if ([elementName isEqualToString:@"referenceableParamGroup"]) {
+        _currentGroup = [NSMutableArray array];
+        _paramGroups[attrs[@"id"] ?: @""] = _currentGroup;
+    } else if ([elementName isEqualToString:@"referenceableParamGroupRef"]) {
+        for (NSDictionary *cv in _paramGroups[attrs[@"ref"] ?: @""]) {
+            [self handleCVParam:cv];
+        }
     } else if ([elementName isEqualToString:@"cvParam"]) {
+        if (_currentGroup) [_currentGroup addObject:[attrs copy]];
         [self handleCVParam:attrs];
     }
 }
@@ -369,6 +384,8 @@ static NSString *normaliseUUID(NSString *value) {
         _currentArrayKind = @"";
     } else if ([elementName isEqualToString:@"scan"]) {
         _inScan = NO;
+    } else if ([elementName isEqualToString:@"referenceableParamGroup"]) {
+        _currentGroup = nil;
     }
 }
 

@@ -54,6 +54,7 @@ add_library(ttio_rans SHARED
     src/mate_info_v2.c
     src/ref_diff_v2.c
     src/name_tok_v2.c
+    src/sam_tags.c
     src/dispatch.c
     src/rans_o0.c
     src/threadpool.c
@@ -384,6 +385,12 @@ add_executable(test_name_tok_v2_stress tests/test_name_tok_v2_stress.c)
 target_link_libraries(test_name_tok_v2_stress PRIVATE ttio_rans)
 target_include_directories(test_name_tok_v2_stress PRIVATE src)
 add_test(NAME name_tok_v2_stress COMMAND test_name_tok_v2_stress)
+
+# M101: SAM_TAGS codec (codec id 18).
+add_executable(test_sam_tags tests/test_sam_tags.c)
+target_link_libraries(test_sam_tags PRIVATE ttio_rans)
+target_include_directories(test_sam_tags PRIVATE src)
+add_test(NAME sam_tags COMMAND test_sam_tags)
 endif()  # BUILD_TESTING
 
 

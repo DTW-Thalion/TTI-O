@@ -523,6 +523,57 @@ int ttio_name_tok_v2_decode(
     char         ***out_names,
     uint64_t       *out_n_reads);
 
+/* ──────────────────────────────────────────────────────────────────────
+ * SAM_TAGS — SAM optional fields as a tag-line dictionary plus one
+ * column per (key, type, kind), MD/NM recomputed from the reference
+ * (codec id 18, M101). Spec: docs/codecs/sam_tags.md.
+ *
+ * The blob is written as signal_channels/tags with @compression = 18.
+ * Wire magic "STG1", version 0x01.
+ *
+ * Tag text per read is SAM columns 12+ tab-joined, as samtools prints
+ * them; tags[tag_offsets[i] .. tag_offsets[i+1]) is read i's text.
+ * Encode and decode take the same context; the reads' sequences,
+ * CIGARs, positions and chromosome ids, and the reference bases, are
+ * needed only for MD/NM derivation (n_refs == 0 disables it, and the
+ * other context arrays may then be NULL).
+ *
+ * Returns 0 on success; TTIO_RANS_ERR_PARAM on bad input (a NUL in the
+ * tag text included), TTIO_RANS_ERR_ALLOC, or TTIO_RANS_ERR_CORRUPT on
+ * a blob that violates the spec.
+ * ────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    uint64_t        n_reads;
+    const uint8_t  *sequences;      /* concatenated SEQ bytes          */
+    const uint64_t *seq_offsets;    /* n_reads + 1                     */
+    const uint8_t  *cigars;         /* concatenated CIGAR text         */
+    const uint64_t *cigar_offsets;  /* n_reads + 1                     */
+    const int64_t  *positions;      /* 1-based POS, 0 = unmapped       */
+    const uint16_t *chrom_ids;      /* 0xFFFF = none                   */
+    const uint8_t * const *refs;    /* n_refs chromosome sequences; NULL entries allowed */
+    const uint64_t *ref_lengths;
+    uint32_t        n_refs;         /* 0 disables MD/NM derivation     */
+} ttio_sam_tags_ctx;
+
+/* *out is allocated by the library; release it with ttio_sam_tags_free. */
+int ttio_sam_tags_encode(
+    const ttio_sam_tags_ctx *ctx,
+    const uint8_t  *tags,
+    const uint64_t *tag_offsets,     /* n_reads + 1 */
+    uint8_t       **out,
+    size_t         *out_len);
+
+/* *out_tags is allocated by the library (release with ttio_sam_tags_free);
+ * out_tag_offsets is caller-allocated with n_reads + 1 entries. */
+int ttio_sam_tags_decode(
+    const ttio_sam_tags_ctx *ctx,
+    const uint8_t  *encoded,
+    size_t          encoded_len,
+    uint8_t       **out_tags,
+    uint64_t       *out_tag_offsets);
+
+void ttio_sam_tags_free(void *p);
+
 #ifdef __cplusplus
 }
 #endif

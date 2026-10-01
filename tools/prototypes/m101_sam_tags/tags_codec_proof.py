@@ -34,7 +34,7 @@ import collections
 import io
 import json
 import multiprocessing as mp
-import struct
+import os
 import subprocess
 import sys
 import time
@@ -91,7 +91,13 @@ def unzigzag(u: int) -> int:
 # --------------------------------------------------------------------------
 # substreams: pick the smallest of raw / rANS-O0 / rANS-O1
 
-def pack_bytes(data: bytes, allow=(M_RAW, M_RANS0, M_RANS1)) -> bytes:
+# M101_METHODS=raw,o0 restricts the substream methods (an environment
+# variable so the worker processes see it under any start method).
+_METHOD_NAMES = {"raw": M_RAW, "o0": M_RANS0, "o1": M_RANS1}
+METHODS = tuple(_METHOD_NAMES[m] for m in os.environ.get("M101_METHODS", "raw,o0,o1").split(","))
+
+
+def pack_bytes(data: bytes, allow=METHODS) -> bytes:
     best = None
     for m in allow:
         if m == M_RAW:

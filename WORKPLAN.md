@@ -30,6 +30,33 @@ aligned reads, so they come before new features.
    (NA12878 WES 1.26 against 3.22 MB), on `XA:Z` alternative-hit
    strings and the tag-line ids; SAM_TAGS needs a tokenised text column
    and an order-1 line-id coder (a codec version bump).
+5. **A reference-free model for bases.** Unaligned reads (FASTQ import,
+   and any run without a reference) code `sequences` with rANS order-1,
+   one read at a time, at about 1.94 bits per base, barely under 2-bit
+   packing. Nothing models the overlap between reads. Measured
+   2026-10-01 on the NA12878 WES chr22 reads as FASTQ, shuffled to
+   approximate sequencer order (992,974 reads, 95.0 M bases):
+   - **Bases:** TTI-O 23.0 MB against xz -9 8.3 MB (0.70 bits/base).
+     This loses 14.7 MB to xz.
+   - **Qualities:** TTI-O 25.9 MB against xz 29.6 MB, a 3.7 MB win.
+   - **Read names:** TTI-O 7.4 MB against xz 5.0 MB, a 2.4 MB loss.
+   - **Totals:** TTI-O 57.8 MB, against gzip -6 74.4 MB, zstd -19
+     54.6 MB, xz -9 48.1 MB and Spring 35.8 MB. TTI-O is 4.1x smaller
+     than the raw FASTQ, but behind every compressor here except gzip.
+
+   On HG002 2x250 chr22 as coordinate-ordered FASTQ, TTI-O is 1,501.0
+   MB against Spring 945.3 MB and xz -9 1,048.8 MB. The fix is a new
+   sequence codec (a codec id):
+   - an order-k context model over the preceding 12–24 bases, as
+     fqzcomp and CRAM use, which reaches about 0.5–1.5 bits per base
+     depending on coverage;
+   - optionally, read reordering as Spring does, which conflicts with
+     keeping the input order and would need a stored permutation.
+
+   Phase 0 should measure both on a high-coverage exome slice and a
+   sequencer-order whole-genome FASTQ, where cross-read redundancy is
+   far lower. The read-name tokenizer also loses on shuffled names
+   against xz; it is part of item 3.
 
 ---
 

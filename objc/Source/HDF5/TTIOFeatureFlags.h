@@ -103,6 +103,13 @@
  *          channel (M101, codec SAM_TAGS). */
 + (NSString *)featureOptSamTags;
 
+/** @return <code>@"opt_pixel_coordinates"</code> — at least one run's
+ *          <code>spectrum_index/</code> carries the
+ *          <code>pixel_x</code> / <code>pixel_y</code> /
+ *          <code>pixel_z</code> int32 imaging-grid columns (M102,
+ *          format-spec §4b). */
++ (NSString *)featurePixelCoordinates;
+
 /** @return <code>@"opt_no_signal_int_dups"</code> â€” file omits the
  *          legacy integer-channel duplicates from
  *          <code>signal_channels/</code>. */

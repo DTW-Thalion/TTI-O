@@ -12,6 +12,25 @@ public API is stable from onward.
 ## [Unreleased]
 
 ### Added
+- **M102 imzML pixel coordinates.** Large imaging imports no longer
+  fail. The Python imzML importer stored every pixel's position in one
+  provenance parameter, `imzml_pixel_coordinates_csv`, which both
+  provenance levels mirror into a fixed-length `@provenance_json`
+  attribute. HDF5 caps an attribute at 64 KB, so an import failed with
+  "object header message is too large" from about 9,000 pixels (PRIDE
+  PXD001283, 34,840 pixels, could not be imported). Positions are now
+  optional `spectrum_index/pixel_x|pixel_y|pixel_z` int32 columns,
+  flagged `opt_pixel_coordinates` (format-spec §4b), read and written
+  by all three SDKs (`SpectrumIndex.pixel_x` / `pixelX()` / `-pixelX`,
+  `pixel_coordinates_at`). The imzML exporters write an imported pixel
+  run back to imzML when the dataset has no MS image cube, keeping its
+  mode, UUID, grid and pixel size, and older files that only carry the
+  CSV still read and export. The ObjC and Java importers now accept
+  processed-mode imzML, as the same `imzml_pixels` run (continuous
+  mode still becomes an MSImage cube there). Files without pixel runs
+  are unchanged. Not yet carried by `.tis` transport. Binding
+  decisions §101–§103.
+
 - **M101 SAM optional tags.** The BAM, SAM and CRAM importers keep the
   optional fields (SAM columns 12 and up) instead of discarding them,
   so a `.tio` made from a BAM is a lossless copy of its records. Each

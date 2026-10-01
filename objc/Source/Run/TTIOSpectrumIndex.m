@@ -40,6 +40,10 @@
     // nil for legacy files; otherwise int32_t[count] with 0 = profile,
     // 1 = centroided. Mirrors mzML CV terms MS:1000127 / MS:1000128.
     NSData *_centroideds;
+    // M102: nil, or all three int32_t[count] imaging-grid positions.
+    NSData *_pixelX;
+    NSData *_pixelY;
+    NSData *_pixelZ;
     NSUInteger _count;
 }
 
@@ -173,6 +177,77 @@
     return ((const int32_t *)_centroideds.bytes)[i] != 0;
 }
 
+#pragma mark - Pixel coordinates (M102)
+
+- (NSData *)pixelX { return _pixelX; }
+- (NSData *)pixelY { return _pixelY; }
+- (NSData *)pixelZ { return _pixelZ; }
+- (BOOL)hasPixelCoordinates { return _pixelX != nil; }
+
+- (int32_t)pixelXAt:(NSUInteger)i
+{
+    return _pixelX ? ((const int32_t *)_pixelX.bytes)[i] : 0;
+}
+
+- (int32_t)pixelYAt:(NSUInteger)i
+{
+    return _pixelY ? ((const int32_t *)_pixelY.bytes)[i] : 0;
+}
+
+- (int32_t)pixelZAt:(NSUInteger)i
+{
+    return _pixelZ ? ((const int32_t *)_pixelZ.bytes)[i] : 0;
+}
+
+/* All three columns or none, each int32_t[count]. */
+static BOOL validatePixelColumns(NSData *x, NSData *y, NSData *z,
+                                 NSUInteger count, NSError **error)
+{
+    if (!x && !y && !z) return YES;
+    if (!x || !y || !z) {
+        if (error) *error = TTIOMakeError(TTIOErrorUnsupportedLayout,
+            @"spectrum_index: pixel_x/pixel_y/pixel_z must be present "
+            @"together or not at all");
+        return NO;
+    }
+    NSUInteger want = count * sizeof(int32_t);
+    if (x.length != want || y.length != want || z.length != want) {
+        if (error) *error = TTIOMakeError(TTIOErrorUnsupportedLayout,
+            @"spectrum_index: pixel columns must hold %lu int32 values "
+            @"(got %lu/%lu/%lu bytes)", (unsigned long)count,
+            (unsigned long)x.length, (unsigned long)y.length,
+            (unsigned long)z.length);
+        return NO;
+    }
+    return YES;
+}
+
+- (instancetype)indexWithPixelX:(NSData *)pixelX
+                         pixelY:(NSData *)pixelY
+                         pixelZ:(NSData *)pixelZ
+                          error:(NSError **)error
+{
+    if (!validatePixelColumns(pixelX, pixelY, pixelZ, _count, error)) return nil;
+    TTIOSpectrumIndex *out =
+        [[[self class] alloc] initWithOffsets:_offsets
+                                      lengths:_lengths
+                               retentionTimes:_retentionTimes
+                                     msLevels:_msLevels
+                                   polarities:_polarities
+                                 precursorMzs:_precursorMzs
+                             precursorCharges:_precursorCharges
+                          basePeakIntensities:_basePeakIntensities
+                            activationMethods:_activationMethods
+                           isolationTargetMzs:_isolationTargetMzs
+                        isolationLowerOffsets:_isolationLowerOffsets
+                        isolationUpperOffsets:_isolationUpperOffsets
+                                  centroideds:_centroideds];
+    out->_pixelX = [pixelX copy];
+    out->_pixelY = [pixelY copy];
+    out->_pixelZ = [pixelZ copy];
+    return out;
+}
+
 - (NSIndexSet *)indicesInRetentionTimeRange:(TTIOValueRange *)range
 {
     const double *rts = _retentionTimes.bytes;
@@ -245,6 +320,13 @@ static NSData *readArray(id<TTIOStorageGroup> g, NSString *name, NSError **error
     if (_centroideds) {
         if (!writeArray(g, @"centroideds", TTIOPrecisionInt32, _centroideds, error)) return NO;
     }
+    // M102 pixel columns (format-spec §4b): emitted only when present,
+    // so indexes without them stay byte-identical.
+    if (_pixelX) {
+        if (!writeArray(g, @"pixel_x", TTIOPrecisionInt32, _pixelX, error)) return NO;
+        if (!writeArray(g, @"pixel_y", TTIOPrecisionInt32, _pixelY, error)) return NO;
+        if (!writeArray(g, @"pixel_z", TTIOPrecisionInt32, _pixelZ, error)) return NO;
+    }
     return YES;
 }
 
@@ -284,7 +366,24 @@ static NSData *readArray(id<TTIOStorageGroup> g, NSString *name, NSError **error
         cent = readArray(g, @"centroideds", error);
         if (!cent) return nil;
     }
-    return [[self alloc] initWithOffsets:offsets
+    // M102 pixel columns: all three or none; partial presence is a
+    // malformed file.
+    BOOL hasPX = [g hasChildNamed:@"pixel_x"];
+    BOOL hasPY = [g hasChildNamed:@"pixel_y"];
+    BOOL hasPZ = [g hasChildNamed:@"pixel_z"];
+    NSData *px = nil, *py = nil, *pz = nil;
+    if (hasPX || hasPY || hasPZ) {
+        if (!(hasPX && hasPY && hasPZ)) {
+            if (error) *error = TTIOMakeError(TTIOErrorUnsupportedLayout,
+                @"spectrum_index is malformed: partial pixel_x/pixel_y/"
+                @"pixel_z columns present");
+            return nil;
+        }
+        px = readArray(g, @"pixel_x", error); if (!px) return nil;
+        py = readArray(g, @"pixel_y", error); if (!py) return nil;
+        pz = readArray(g, @"pixel_z", error); if (!pz) return nil;
+    }
+    TTIOSpectrumIndex *idx = [[self alloc] initWithOffsets:offsets
                                  lengths:lengths
                           retentionTimes:rts
                                 msLevels:ml
@@ -297,6 +396,8 @@ static NSData *readArray(id<TTIOStorageGroup> g, NSString *name, NSError **error
                    isolationLowerOffsets:ilo
                    isolationUpperOffsets:iup
                               centroideds:cent];
+    if (!px) return idx;
+    return [idx indexWithPixelX:px pixelY:py pixelZ:pz error:error];
 }
 
 + (instancetype)readFromStorageGroup:(id)parent error:(NSError **)error

@@ -246,6 +246,12 @@ static uint32_t ttioRngNextBoundedU32(TTIORngState *r, uint32_t bound)
         NSMutableData *pmzsBuf = [NSMutableData data];
         NSMutableData *pcsBuf = [NSMutableData data];
         NSMutableData *bpisBuf = [NSMutableData data];
+        // M102: imaging pixels keep their grid positions.
+        TTIOSpectrumIndex *srcIdx = run.spectrumIndex;
+        BOOL keepPixels = srcIdx.hasPixelCoordinates;
+        NSMutableData *pxBuf = keepPixels ? [NSMutableData data] : nil;
+        NSMutableData *pyBuf = keepPixels ? [NSMutableData data] : nil;
+        NSMutableData *pzBuf = keepPixels ? [NSMutableData data] : nil;
         int64_t cursor = 0;
         NSUInteger keptCount = 0;
 
@@ -350,6 +356,14 @@ static uint32_t ttioRngNextBoundedU32(TTIORngState *r, uint32_t bound)
             [pmzsBuf appendBytes:&pmz length:sizeof(pmz)];
             [pcsBuf appendBytes:&pc length:sizeof(pc)];
             [bpisBuf appendBytes:&bpi length:sizeof(bpi)];
+            if (keepPixels) {
+                int32_t px = [srcIdx pixelXAt:i];
+                int32_t py = [srcIdx pixelYAt:i];
+                int32_t pz = [srcIdx pixelZAt:i];
+                [pxBuf appendBytes:&px length:sizeof(px)];
+                [pyBuf appendBytes:&py length:sizeof(py)];
+                [pzBuf appendBytes:&pz length:sizeof(pz)];
+            }
 
             cursor += (int64_t)n;
             keptCount++;
@@ -375,6 +389,11 @@ static uint32_t ttioRngNextBoundedU32(TTIORngState *r, uint32_t bound)
                   basePeakIntensities:bpisBuf];
         if (run.nucleusType.length > 0) {
             newRun.nucleusType = run.nucleusType;
+        }
+        if (keepPixels) {
+            newRun.pixelX = pxBuf;
+            newRun.pixelY = pyBuf;
+            newRun.pixelZ = pzBuf;
         }
         // Carry per-run provenance forward so the anonymised file's
         // MS run keeps its history (now that TTIOWrittenRun has the

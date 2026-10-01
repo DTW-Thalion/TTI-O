@@ -53,6 +53,12 @@ public class SpectrumIndex {
     // {@code 0 = profile, 1 = centroided} per spectrum. Mirrors mzML
     // CV terms MS:1000127 (centroid) and MS:1000128 (profile).
     private final int[] centroideds;
+    // M102: optional imaging pixel coordinates (format-spec §4b).
+    // All three are null or all three are populated with length
+    // {@code count}; set only through {@link #withPixelCoordinates}.
+    private int[] pixelX;
+    private int[] pixelY;
+    private int[] pixelZ;
 
     /** Pre-M74 legacy constructor; defaults the four M74 columns to null. */
     public SpectrumIndex(int count, long[] offsets, int[] lengths,
@@ -231,6 +237,63 @@ public class SpectrumIndex {
         return new IsolationWindow(t, l, u);
     }
 
+    /** (M102) @return per-spectrum pixel x positions, or {@code null}
+     *  when the run carries no pixel coordinates. */
+    public int[] pixelX() { return pixelX; }
+
+    /** (M102) @return per-spectrum pixel y positions, or {@code null}. */
+    public int[] pixelY() { return pixelY; }
+
+    /** (M102) @return per-spectrum pixel z positions ({@code 1} for a
+     *  2-D acquisition), or {@code null}. */
+    public int[] pixelZ() { return pixelZ; }
+
+    /** (M102) @return {@code true} when the three
+     *  {@code pixel_x/pixel_y/pixel_z} columns are present. */
+    public boolean hasPixelCoordinates() { return pixelX != null; }
+
+    /** (M102) @param i spectrum index.
+     *  @return {@code {x, y, z}} of spectrum {@code i}, or {@code null}
+     *  when the run carries no pixel coordinates. */
+    public int[] pixelCoordinatesAt(int i) {
+        if (pixelX == null) return null;
+        return new int[]{ pixelX[i], pixelY[i], pixelZ[i] };
+    }
+
+    /** (M102) Returns a copy of this index carrying the given pixel
+     *  coordinate columns (format-spec §4b). The three arrays must be
+     *  all {@code null} (the copy carries no coordinates) or all
+     *  non-null with length {@link #count()}; the other columns are
+     *  shared with this index.
+     *
+     *  <p><b>Cross-language equivalents:</b> Python
+     *  {@code SpectrumIndex.pixel_x/pixel_y/pixel_z}, Objective-C
+     *  {@code TTIOSpectrumIndex pixelX/pixelY/pixelZ}.</p>
+     *
+     *  @throws IllegalArgumentException on partial or mis-sized columns */
+    public SpectrumIndex withPixelCoordinates(int[] x, int[] y, int[] z) {
+        boolean anyNull = x == null || y == null || z == null;
+        boolean allNull = x == null && y == null && z == null;
+        if (anyNull && !allNull) {
+            throw new IllegalArgumentException(
+                "pixel coordinate columns must be all-null or all-populated");
+        }
+        if (!allNull && (x.length != count || y.length != count || z.length != count)) {
+            throw new IllegalArgumentException(
+                "pixel coordinate column lengths (" + x.length + ", " + y.length
+                + ", " + z.length + ") do not match spectrum count " + count);
+        }
+        SpectrumIndex copy = new SpectrumIndex(count, offsets, lengths,
+                retentionTimes, msLevels, polarities, precursorMzs,
+                precursorCharges, basePeakIntensities,
+                activationMethods, isolationTargetMzs,
+                isolationLowerOffsets, isolationUpperOffsets, centroideds);
+        copy.pixelX = x;
+        copy.pixelY = y;
+        copy.pixelZ = z;
+        return copy;
+    }
+
     /**
      * @return indices whose retention time lies within
      *         {@code [range.minimum(), range.maximum()]}.
@@ -282,6 +345,12 @@ public class SpectrumIndex {
             if (centroideds != null) {
                 writeDataset(idx, "centroideds", Precision.INT32, centroideds);
             }
+            // M102: pixel coordinates, all three or none (format-spec §4b).
+            if (pixelX != null) {
+                writeDataset(idx, "pixel_x", Precision.INT32, pixelX);
+                writeDataset(idx, "pixel_y", Precision.INT32, pixelY);
+                writeDataset(idx, "pixel_z", Precision.INT32, pixelZ);
+            }
         }
     }
 
@@ -326,12 +395,34 @@ public class SpectrumIndex {
             int[] centroideds = idx.hasChild("centroideds")
                     ? readInts(idx, "centroideds") : null;
 
-            return new SpectrumIndex(count, offsets, lengths, retentionTimes,
+            SpectrumIndex out = new SpectrumIndex(count, offsets, lengths, retentionTimes,
                     msLevels, polarities, precursorMzs, precursorCharges,
                     basePeakIntensities,
                     activationMethods, isolationTargetMzs,
                     isolationLowerOffsets, isolationUpperOffsets,
                     centroideds);
+
+            // M102: optional pixel coordinates; partial presence is a
+            // malformed file, like the M74 check above.
+            boolean hasPx = idx.hasChild("pixel_x");
+            boolean hasPy = idx.hasChild("pixel_y");
+            boolean hasPz = idx.hasChild("pixel_z");
+            if (hasPx != hasPy || hasPx != hasPz) {
+                throw new IllegalStateException(
+                    "spectrum_index is malformed: partial pixel coordinate columns present");
+            }
+            if (hasPx) {
+                int[] px = readInts(idx, "pixel_x");
+                int[] py = readInts(idx, "pixel_y");
+                int[] pz = readInts(idx, "pixel_z");
+                if (px.length != count || py.length != count || pz.length != count) {
+                    throw new IllegalStateException(
+                        "spectrum_index is malformed: pixel coordinate column length "
+                        + "does not match count " + count);
+                }
+                out = out.withPixelCoordinates(px, py, pz);
+            }
+            return out;
         }
     }
 

@@ -48,8 +48,11 @@ if [ ! -e "$PREFIX/share/GNUstep/Makefiles/GNUstep.sh" ]; then
 fi
 
 if ! ls "$PREFIX"/lib/libgnustep-base.so* >/dev/null 2>&1; then
+  # GNUstep.sh reads unset variables (ZSH_VERSION, ...).
+  set +u
   # shellcheck disable=SC1091
   . "$PREFIX/share/GNUstep/Makefiles/GNUstep.sh"
+  set -u
   git clone --depth 1 --branch "$LIBS_BASE_REF" https://github.com/gnustep/libs-base.git "$WORK/libs-base"
   (cd "$WORK/libs-base" && ./configure CC=clang && make && sudo -E make install)
 fi

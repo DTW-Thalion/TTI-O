@@ -221,6 +221,9 @@ class _SamTagsCodec:
     reference bases; without ``tag_references`` none of that is read."""
     id = Compression.SAM_TAGS
     is_context_aware = True
+    # Derivation reuses the reference REF_DIFF_V2 already requires; the
+    # codec never makes a writer embed one (binding decision §98).
+    needs_embedded_reference = False
 
     def decode(self, payload, ctx):
         import numpy as _np

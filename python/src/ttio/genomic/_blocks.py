@@ -19,8 +19,15 @@ import numpy as np
 
 from ..written_genomic_run import WrittenGenomicRun
 
-#: Blob channels of a block, in block-index column order.
-BLOCK_CHANNELS = ("sequences", "qualities", "read_names", "cigars", "mate_info")
+#: Blob channels every blocks_v1 run indexes, in block-index column order.
+REQUIRED_BLOCK_CHANNELS = ("sequences", "qualities", "read_names", "cigars", "mate_info")
+#: Channels whose index columns exist only in runs that carry them (M101:
+#: the SAM tags). Their (off, len, codec) columns follow the required
+#: channels' codec columns; a reader treats missing columns as an empty
+#: channel (format-spec 10.12.2).
+OPTIONAL_BLOCK_CHANNELS = ("tags",)
+#: Every blob channel of a block.
+BLOCK_CHANNELS = REQUIRED_BLOCK_CHANNELS + OPTIONAL_BLOCK_CHANNELS
 
 
 @dataclass
@@ -56,6 +63,7 @@ def slice_run(run: WrittenGenomicRun, start: int, stop: int) -> WrittenGenomicRu
         mate_positions=run.mate_positions[start:stop],
         template_lengths=run.template_lengths[start:stop],
         chromosomes=list(run.chromosomes[start:stop]),
+        tags=None if run.tags is None else list(run.tags[start:stop]),
         provenance_records=[],
     )
 
@@ -83,6 +91,8 @@ def concat_runs(parts: list[WrittenGenomicRun]) -> WrittenGenomicRun:
         mate_positions=np.concatenate([p.mate_positions for p in parts]),
         template_lengths=np.concatenate([p.template_lengths for p in parts]),
         chromosomes=[c for p in parts for c in p.chromosomes],
+        tags=(None if all(p.tags is None for p in parts)
+              else [t for p in parts for t in (p.tags or [""] * len(p.cigars))]),
         provenance_records=[],
     )
 

@@ -255,6 +255,7 @@ class BamWriter:
             return
         seq_buf = bytes(run.sequences)
         qual_buf = bytes(run.qualities)
+        tags = run.tags
 
         n = len(run.read_names)
         for i in range(n):
@@ -301,9 +302,11 @@ class BamWriter:
                     # rejects QUAL > '~' (0x7e).
                     qual = qual_bytes.decode("latin-1")
 
+            # M101: the optional fields follow column 11 verbatim.
+            tail = f"\t{tags[i]}" if tags and tags[i] else ""
             yield (
                 f"{qname}\t{flag}\t{rname}\t{pos}\t{mapq}\t{cigar}\t"
-                f"{rnext}\t{pnext}\t{tlen}\t{seq}\t{qual}\n"
+                f"{rnext}\t{pnext}\t{tlen}\t{seq}\t{qual}{tail}\n"
             )
 
     # ------------------------------------------------------------------
@@ -469,9 +472,10 @@ def _lazy_lines(run):
             qual = "*"
         else:
             qual = q.decode("latin-1")
+        tail = f"\t{r.tags}" if r.tags else ""
         yield (
             f"{qname}\t{int(r.flags)}\t{rname}\t{int(r.position)}\t{int(r.mapping_quality)}\t"
-            f"{r.cigar or '*'}\t{rnext}\t{pnext}\t{int(r.template_length)}\t{seq}\t{qual}\n"
+            f"{r.cigar or '*'}\t{rnext}\t{pnext}\t{int(r.template_length)}\t{seq}\t{qual}{tail}\n"
         )
 
 

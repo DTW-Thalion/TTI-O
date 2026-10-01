@@ -377,7 +377,7 @@ stdout is consumed line-by-line by the language-native subprocess wrapper:
 | 10  | SEQ      | concatenated into `sequences` byte array (`"*"` → 0 bytes) |
 | 11  | QUAL     | concatenated into `qualities` byte array                   |
 
-Only columns 1–11 are parsed in v0; optional tag fields (12+) are discarded. The `sequences` and `qualities` byte arrays are concatenated across all reads with `offsets[i]` / `lengths[i]` parallel arrays giving each read's slice.
+Columns 1–11 are parsed into the model; the optional tag fields (12+) are kept as each read's tab-joined tag text (`tags[i]`, M101) and stored with the SAM_TAGS codec. The `sequences` and `qualities` byte arrays are concatenated across all reads with `offsets[i]` / `lengths[i]` parallel arrays giving each read's slice.
 
 ### Header line handling
 
@@ -426,7 +426,7 @@ A small canonical fixture (`m87_test.sam` + `m87_test.bam` + `m87_test.bam.bai`,
 
 * **CRAM input** — requires a reference FASTA. M88 (separate milestone) handles CRAM import.
 * **BAM/SAM writing** — TTI-O is the read direction in M87. M88 covers BAM/CRAM writers.
-* **Optional SAM tag fields** (`NM:i:`, `MD:Z:`, etc.) — ignored in v0. A future milestone could expose them as a `tags` field on `AlignedRead`.
+* **BAM integer tag widths** — the optional fields are kept as the SAM text samtools prints (M101), where every integer type (`c C s S i I`) reads as `i`; the width is chosen again when a BAM is written.
 * **Multi-`@RG` aggregation** — only the first `@RG` is parsed. Caller can override `sample_name=` if needed.
 * **htslib direct linking** — subprocess via `samtools` is the Phase 5 design choice. A future optimisation milestone could add htslib-Java / pysam fast paths if the subprocess startup overhead (~50 ms per import) becomes a bottleneck.
 * **Whole-run materialisation** — `to_genomic_run` builds the full `WrittenGenomicRun` in memory. Inputs that should not be held whole go through the streaming surface instead: `BamReader.iter_batches` / `stream_source` feed a `GenomicStreamWriter` batch by batch (see `docs/genomic-runs.md` §2.5, §6).

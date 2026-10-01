@@ -277,7 +277,12 @@ In addition to the M89.1 sequences/qualities UINT8 channels, M90.9
 genomic AUs may carry per-AU UINT8 string channels named ``cigar``,
 ``read_name``, and ``mate_chromosome`` carrying the SAM-equivalent
 per-read fields. Decoders dispatch on channel name; missing channels
-default to the empty string. The mate extension on the suffix is
+default to the empty string. M101 adds a fourth string channel,
+``tags``: the read's SAM optional fields, tab-joined as samtools
+prints them. A sender lists ``tags`` in the DatasetHeader and carries
+it in every AU only for a run that has a tags channel, so streams of
+tag-less runs are unchanged. Under per-AU encryption the ``tags``
+channel is encrypted with ``sequences`` and ``qualities``. The mate extension on the suffix is
 optional — M89.1 fixtures decode unchanged with mate_position=-1 and
 template_length=0.
 
@@ -858,7 +863,9 @@ read_start:          uint64
 n_reads:             uint32
 base_start:          uint64
 n_bases:             uint64
-n_channels:          uint8                    # all 5 block channels
+n_channels:          uint8                    # the index's channels: the 5
+                                              # required, plus "tags" when the
+                                              # run's index has the M101 triple
 # repeated n_channels times:
 channel_name:        uint16 len + UTF-8
 off:                 uint64                   # blocks/index <ch>_off
@@ -873,7 +880,9 @@ blob:                bytes[blob_length]       # the block's verbatim blob slice
 
 The receiver writes the run attributes (including the verbatim
 `reference_md5s` string and the policy attributes), recreates
-`blocks/index` from the sidecar rows, appends the blob slices into
+`blocks/index` from the sidecar rows (with the `tags` triple when the
+rows carry a `tags` entry, M101; the tags blob itself is encrypted and
+travels as the per-AU `tags` channel, not as a sidecar blob), appends the blob slices into
 the plaintext channel datasets with the carried dataset attributes,
 builds the `genomic_index` arrays from the AU stream (lengths from
 the segment table, positions, mapping qualities, flags and

@@ -183,6 +183,12 @@ consequence.
 |----------------------|-----------|-------|----------------------------------------------------------------------------------------------------|
 | `opt_assembly_graph` | optional  | M98   | The file holds one or more GFA 1.x assembly graphs under `/study/assembly_graphs/<name>/` (format-spec §11a). Writers add the flag only when at least one graph is present, so graph-less files stay byte-identical to pre-M98 output; readers that ignore the flag parse the rest of the file normally — the graphs are a separate group hierarchy. |
 
+## M101 — SAM optional tags
+
+| Flag           | Required? | Since | Semantics |
+|----------------|-----------|-------|-----------|
+| `opt_sam_tags` | optional  | M101  | At least one genomic run carries the SAM optional fields of its reads in a `signal_channels/tags` dataset (SAM_TAGS, codec id 18; format-spec §10.13). Writers add the flag only when a tags dataset is written, so files without tags stay byte-identical to pre-M101 output; readers that ignore the flag read every other channel unchanged and lose only the tags. |
+
 ## v0.7 storage + crypto surface (non-flag)
 
 Some v0.7 additions are API-level and don't carry a feature flag —

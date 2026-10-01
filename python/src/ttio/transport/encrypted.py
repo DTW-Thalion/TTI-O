@@ -282,8 +282,9 @@ def write_encrypted_dataset(
             g_dataset_id = len(run_items) + genomic_offset
             g_sig = g_run_group.open_group("signal_channels")
             g_idx = g_run_group.open_group("genomic_index")
-            # Genomic only encrypts sequences + qualities (M90.1).
-            g_channel_names = [c for c in ("sequences", "qualities")
+            # Genomic encrypts sequences + qualities (M90.1) and, when
+            # the run carries them, the SAM tags (M101).
+            g_channel_names = [c for c in ("sequences", "qualities", "tags")
                                 if g_sig.has_child(f"{c}_segments")]
             g_first = g_channel_names[0] if g_channel_names else "sequences"
             cipher_suite = (io.read_string_attr(g_sig, f"{g_first}_algorithm")
@@ -452,9 +453,11 @@ def _emit_blocks_v1_sidecars(writer, run_group, sig, *,
     row order. Each block sidecar carries that block's index row and
     its verbatim slices of the plaintext channel blobs."""
     from ..genomic._block_view import BlockTable
-    from ..genomic._blocks import BLOCK_CHANNELS
 
     table = BlockTable.read(run_group)
+    # The index's own channel set: a run without tags sends the five
+    # required entries, exactly as before M101.
+    BLOCK_CHANNELS = table.channels
     attrs: dict = {}
     for name in ("ref_diff_slice_bytes", "opt_disable_qualities_v5"):
         v = io.read_int_attr(run_group, name, default=0)
@@ -1132,8 +1135,8 @@ def _write_blocks_v1_genomic_run(g_runs_group, d: dict,
     its sidecar packets and AU stream, in the shape the stream
     writer creates it, so decrypt-in-place restores it."""
     from ..enums import Compression
-    from ..genomic.stream_writer import (CHANNEL_CHUNK, INDEX_FIELDS,
-                                           _INDEX_ARRAYS)
+    from ..genomic.stream_writer import (CHANNEL_CHUNK, _INDEX_ARRAYS,
+                                           index_fields_for)
 
     meta = d["meta"]
     sc = d["run_sidecar"]
@@ -1170,8 +1173,6 @@ def _write_blocks_v1_genomic_run(g_runs_group, d: dict,
     sidecars = sorted(d["block_sidecars"],
                        key=lambda x: x["block_index"])
     blocks = rg.create_group("blocks")
-    idx_ds = blocks.create_compound_dataset(
-        "index", INDEX_FIELDS, 0, extendable=True, chunk_rows=1024)
     rows = []
     for bs in sidecars:
         row = {"read_start": bs["read_start"],
@@ -1183,6 +1184,9 @@ def _write_blocks_v1_genomic_run(g_runs_group, d: dict,
             row[f"{ch}_len"] = c_len
             row[f"{ch}_codec"] = codec
         rows.append(row)
+    # The index carries the tags triple when the sender's did (M101).
+    idx_ds = blocks.create_compound_dataset(
+        "index", index_fields_for(rows), 0, extendable=True, chunk_rows=1024)
     if rows:
         idx_ds.append(rows)
 

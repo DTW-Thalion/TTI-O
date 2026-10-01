@@ -25,6 +25,9 @@ class AlignedRead:
     mate_chromosome: str
     mate_position: int
     template_length: int
+    # M101: the SAM optional fields (columns 12+), tab-joined as
+    # samtools prints them; "" when the read has none.
+    tags: str = ""
 
     @property
     def is_mapped(self) -> bool:

@@ -353,7 +353,18 @@ def _get_int_attr(group, name: str, default: int = 0) -> int:
 # re-encodes and byte-compares every block BEFORE deleting anything,
 # and refuses the run when a blob is not reproducible.
 
-_BLOCKS_V1_CHANNELS = ("sequences", "qualities")
+# M101: the SAM tags are encrypted with the bases they describe (an MD
+# string lists the read's mismatches). One AU per read, the plaintext
+# being the read's tag text; "tags" is handled as text, not bytes.
+_BLOCKS_V1_CHANNELS = ("sequences", "qualities", "tags")
+
+
+def _split_tag_texts(flat: bytes, lengths) -> list[str]:
+    out, p = [], 0
+    for ln in lengths:
+        out.append(flat[p:p + int(ln)].decode("utf-8"))
+        p += int(ln)
+    return out
 
 
 def _blocks_v1_layout(run_group) -> bool:
@@ -402,8 +413,9 @@ def _blocks_v1_block_run(run_group, table, b: int, references_group, *,
     ``decrypted`` maps channel name to raw plaintext bytes on the
     decrypt path, where the coded blobs no longer exist; the raw
     bytes are injected into the block view as codec-0 datasets. The
-    encrypt path passes ``None`` and decodes everything from the
-    file's blobs.
+    tags (M101) arrive as ``decrypted["tags"]``, a list of per-read
+    strings, and go straight into the block run. The encrypt path
+    passes ``None`` and decodes everything from the file's blobs.
 
     Returns ``(block_run, seq_bytes, qual_bytes)`` where the byte
     strings are the block's decoded plaintext channels.
@@ -419,6 +431,8 @@ def _blocks_v1_block_run(run_group, table, b: int, references_group, *,
     if decrypted:
         sc = view.open_group("signal_channels")
         for cname, raw in decrypted.items():
+            if cname == "tags":
+                continue
             ds = sc.create_dataset(cname, Precision.UINT8, len(raw))
             ds.write(np.frombuffer(raw, dtype=np.uint8))
             io.write_int_attr(ds, "compression", 0, dtype="<u1")
@@ -482,6 +496,8 @@ def _blocks_v1_block_run(run_group, table, b: int, references_group, *,
         template_lengths=np.asarray(
             [r.template_length for r in reads], dtype=np.int32),
         chromosomes=[r.chromosome for r in reads],
+        tags=(list(decrypted["tags"]) if decrypted and "tags" in decrypted
+              else [r.tags for r in reads]),
         reference_chrom_seqs=ref_seqs,
         signal_codec_overrides=overrides,
         opt_disable_qualities_v5=bool(
@@ -529,6 +545,7 @@ def _encrypt_blocks_v1_run(study, run_group, dataset_id: int,
 
     seg_ds = {ch: io.create_channel_segments_extendable(
         sig, f"{ch}_segments") for ch in channels}
+    tag_offset = 0      # global plaintext offset of the tags channel
     try:
         for b in range(table.count):
             r0 = int(table.read_start[b])
@@ -536,7 +553,15 @@ def _encrypt_blocks_v1_run(study, run_group, dataset_id: int,
                 run_group, table, b, refs)
             plain = {"sequences": seq_bytes, "qualities": qual_bytes}
             for ch in channels:
-                blk_lengths = np.asarray(block.lengths, dtype=np.uint32)
+                base = int(table.base_start[b])
+                if ch == "tags":
+                    texts = [t.encode("utf-8") for t in (block.tags or [""] * len(block.lengths))]
+                    plain["tags"] = b"".join(texts)
+                    blk_lengths = np.asarray([len(t) for t in texts], dtype=np.uint32)
+                    base = tag_offset
+                    tag_offset += len(plain["tags"])
+                else:
+                    blk_lengths = np.asarray(block.lengths, dtype=np.uint32)
                 local = np.zeros(len(blk_lengths), dtype=np.uint64)
                 if len(blk_lengths) > 1:
                     local[1:] = np.cumsum(
@@ -549,7 +574,7 @@ def _encrypt_blocks_v1_run(study, run_group, dataset_id: int,
                     key=key,
                     dtype="<u1",
                     au_base=r0,
-                    offset_base=int(table.base_start[b]),
+                    offset_base=base,
                 )
                 io.append_channel_segments(seg_ds[ch], segments)
     except Exception:
@@ -598,9 +623,11 @@ def _decrypt_blocks_v1_run_in_place(study, run_group, dataset_id: int,
         for ch in channels:
             rows = io.read_channel_segments_slice(
                 sig, f"{ch}_segments", r0, nn)
-            decrypted[ch] = decrypt_channel_from_segments(
+            flat = decrypt_channel_from_segments(
                 rows, dataset_id=dataset_id, channel_name=ch, key=key,
                 dtype="<u1", au_base=r0).tobytes()
+            decrypted[ch] = (_split_tag_texts(flat, [s.length for s in rows])
+                             if ch == "tags" else flat)
         block, _, _ = _blocks_v1_block_run(
             run_group, table, b, refs, decrypted=decrypted)
         blobs = encode_block(block, qual_strategy_hint=qual_hint)
@@ -649,7 +676,7 @@ def _rewrite_blocks_index(run_group, channels, new_ranges) -> None:
     wrote for ``channels``. Only reached when a re-encoded blob did
     not land on the recorded ranges; the other columns and channels
     are carried over unchanged."""
-    from .genomic.stream_writer import INDEX_FIELDS
+    from .genomic.stream_writer import index_fields_for
 
     blocks = run_group.open_group("blocks")
     rows = blocks.open_dataset("index").read_rows()
@@ -661,7 +688,7 @@ def _rewrite_blocks_index(run_group, channels, new_ranges) -> None:
             row[f"{ch}_codec"] = codec
     blocks.delete_child("index")
     ds = blocks.create_compound_dataset(
-        "index", INDEX_FIELDS, 0, extendable=True, chunk_rows=1024)
+        "index", index_fields_for(rows), 0, extendable=True, chunk_rows=1024)
     if rows:
         ds.append(rows)
 
@@ -830,6 +857,15 @@ def encrypt_per_au(
                     dataset_id_counter += 1
                     continue
                 g_sig = g_group.open_group("signal_channels")
+                if g_sig.has_child("tags"):
+                    # M101: tags are encrypted with the bases; only the
+                    # blocks_v1 walker carries them, and leaving them in
+                    # plaintext would expose MD strings.
+                    raise ValueError(
+                        f"per-AU encryption: genomic run {g_run_name!r} uses the "
+                        "whole-channel layout and carries SAM tags; per-AU "
+                        "protection of tags needs the blocks_v1 layout. Rewrite "
+                        "the run without opt_legacy_whole_channel.")
                 g_idx = g_group.open_group("genomic_index")
                 from .genomic_index import _read_offsets_from_lengths_dataset
                 g_offsets = _read_offsets_from_lengths_dataset(g_idx)
@@ -1008,18 +1044,22 @@ def decrypt_per_au(
                     continue
                 g_sig = g_group.open_group("signal_channels")
                 g_run_out: dict[str, Any] = {}
-                for cname in ("sequences", "qualities"):
+                for cname in ("sequences", "qualities", "tags"):
                     seg_name = f"{cname}_segments"
                     if not g_sig.has_child(seg_name):
                         continue
                     segments = io.read_channel_segments(g_sig, seg_name)
-                    g_run_out[cname] = decrypt_channel_from_segments(
+                    flat = decrypt_channel_from_segments(
                         segments,
                         dataset_id=dataset_id_counter,
                         channel_name=cname,
                         key=key,
                         dtype="<u1",
                     )
+                    # M101: tags come back as one string per read.
+                    g_run_out[cname] = (
+                        _split_tag_texts(flat.tobytes(), [s.length for s in segments])
+                        if cname == "tags" else flat)
                 out[g_run_name] = g_run_out
                 dataset_id_counter += 1
 
@@ -1356,6 +1396,12 @@ def encrypt_per_au_by_region(
             except KeyError:
                 continue
             g_sig = g_group.open_group("signal_channels")
+            if g_sig.has_child("tags"):
+                # M101: region keys do not cover the SAM tags; refuse
+                # rather than leave MD strings in plaintext.
+                raise ValueError(
+                    f"per-AU region encryption: genomic run {g_run_name!r} carries "
+                    "SAM tags, which region keys do not protect; use encrypt_per_au")
             g_idx = g_group.open_group("genomic_index")
             from .genomic_index import _read_offsets_from_lengths_dataset
             g_offsets = _read_offsets_from_lengths_dataset(g_idx)

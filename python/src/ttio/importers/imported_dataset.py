@@ -17,6 +17,22 @@ if TYPE_CHECKING:
     from ..written_genomic_run import WrittenGenomicRun
 
 
+def _flag_sam_tags(ds: SpectralDataset, streams: dict) -> None:
+    """Add ``opt_sam_tags`` once a streamed genomic run turned out to
+    carry SAM tags (M101); the static write could not know."""
+    from .. import _hdf5_io as io
+    runs = ds.study_group.open_group("genomic_runs")
+    names = [getattr(src, "name", key) for key, src in streams.items()]
+    if not any(runs.has_child(name)
+               and runs.open_group(name).open_group("signal_channels").has_child("tags")
+               for name in names):
+        return
+    root = ds.provider.root_group()
+    version, features = io.read_feature_flags(root)
+    if "opt_sam_tags" not in features:
+        io.write_feature_flags(root, version, list(features) + ["opt_sam_tags"])
+
+
 @dataclass(slots=True)
 class ImportedDataset:
     """In-memory bundle of built runs + dataset metadata, ready to write."""
@@ -48,6 +64,8 @@ class ImportedDataset:
                     src.write_into(ds.study_group, progress=progress)
                 for src in self.spectral_streams.values():
                     src.write_into(ds.study_group, progress=progress)
+                if self.genomic_streams:
+                    _flag_sam_tags(ds, self.genomic_streams)
         return out
 
     def _write_static(self, path: str | Path, *, features: list[str] | None = None,

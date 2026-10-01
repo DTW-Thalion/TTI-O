@@ -893,6 +893,8 @@ HDF5 filter pipeline (codec ids 1–3) or a dedicated per-channel
 | 16 | ZSTD                   | Zstandard (RFC 8878). Wire-only: an opt-in codec for spectral access-unit channels on the transport stream (`transport-spec.md` §4.3). No on-disk `@compression` dispatch. |
 | 17 | FLOAT_DELTA_ZSTD       | Lossless float64 channel codec: per block of 2^20 values, none/delta on the uint64 bit view (chosen by exact size comparison), byte-plane transpose, one zstd frame. Magic `FDZ1`. Values round-trip bit-exactly (NaN payloads, signed zeros, Inf). The default for float64 channels of `TTIOMassSpectrum` runs (writers opt out via `opt_disable_float_delta` / `optDisableFloatDelta`); other spectral classes opt in via `signal_compression="float_delta_zstd"`. The dataset becomes a flat uint8 stream with `@compression = 17` and no HDF5 filter. Encoders MAY differ byte-wise across languages (zstd builds differ); decoders MUST accept any conforming stream — a shared golden fixture pins the decode side. See `docs/codecs/float_delta_zstd.md`. |
 
+| 18 | SAM_TAGS               | SAM optional fields (columns 12+) of a run of reads (M101): a per-blob tag-line dictionary, one column per (tag key, type), MD:Z and NM:i recomputed from the reference when they match, integers equal to an earlier tag in the read stored as back-references, verbatim storage for non-canonical text. Lossless on the samtools tag text. Magic `STG1`. Context-aware (sequences, CIGARs, positions, chromosome ids, reference). One native kernel shared by the three SDKs. See §10.13 and `docs/codecs/sam_tags.md`. |
+
 Ids `0`–`3` ride the HDF5 filter pipeline; ids `4`+ are signalled via
 the per-channel `@compression` attribute (see §10.5). Reserved ids
 `8` / `9` / `10` retain their wire-format slots so cross-language
@@ -927,6 +929,8 @@ migration error.
   spec; `opt_disable_float_delta` preserves the previous layout).
   Non-MS spectral channels keep the HDF5 shuffle + zlib filter
   pipeline as their default and opt in explicitly.
+- Id `18` (SAM_TAGS) applies to the genomic `tags` channel only, and
+  is its only codec (§10.13).
 
 See §10.5 for the `@compression` attribute scheme, §10.6 for the
 `read_names` channel format, §10.7 for the integer-channel
@@ -1574,6 +1578,14 @@ order is part of the contract:
 | `mate_info_off`, `mate_info_len` | uint64 | same for `mate_info/inline_v2` |
 | `sequences_codec`, `qualities_codec`, `read_names_codec`, `cigars_codec`, `mate_info_codec` | uint32 | the codec id (section 10.4) of that block's blob, one column per channel in the same order |
 
+A run that carries the `tags` channel (§10.13) has three more columns
+after `mate_info_codec`: `tags_off`, `tags_len` (uint64) and
+`tags_codec` (uint32). A run without tags has no such columns, so its
+index is unchanged; readers treat absent tag columns as an empty tags
+channel in every block. A writer whose first tagged block arrives after
+untagged blocks rewrites the index with the three columns, the earlier
+rows at `tags_len = 0`.
+
 A channel a run does not carry has `_len = 0` in every row. The codec
 columns exist because a block's codec can differ from its
 neighbours': a mapped block codes sequences with REF_DIFF_V2 while
@@ -1586,7 +1598,8 @@ block's codec and is informative only.
 Each blob channel is one extendable 1-D `uint8` dataset holding the
 blocks' blobs back to back: `sequences/data` (always a group under
 this layout, whatever the codec), `qualities`, `read_names`,
-`cigars`, `mate_info/inline_v2`. Codec output is unfiltered; a channel
+`cigars`, `mate_info/inline_v2`, and `tags` when the run carries SAM
+tags (§10.13). Codec output is unfiltered; a channel
 whose codec is 0 keeps the zlib filter. Chunk size is 256 KiB.
 
 A block never spans two chromosomes: the writer flushes the pending
@@ -1649,13 +1662,48 @@ the last indexed block and use the index row count, not
 
 `sign_genomic_run` / `verify_genomic_run` cover the same datasets as
 for the whole-channel layout (the datasets inside a channel group,
-`sequences/data`, included) plus `blocks/index` (canonical compound
-bytes). Per-AU and region encryption of genomic channels operate on
-the whole-channel layout only.
+`sequences/data`, included), the `tags` channel when present (M101),
+plus `blocks/index` (canonical compound bytes). Per-AU encryption
+walks this layout block by block (§9.1.1, M99) and encrypts
+`sequences`, `qualities` and, when present, `tags`. Region encryption
+operates on the whole-channel layout only and refuses a run that
+carries tags.
 
 Cross-language: Java `GenomicStreamWriter` / ObjC
 `TTIOGenomicStreamWriter` and their readers implement this section;
 the golden fixture is `python/tests/fixtures/genomic/blocks_v1_golden.tio`.
+
+## 10.13 `tags` channel — SAM optional fields (M101)
+
+A genomic run may carry the SAM optional fields of its reads: for each
+read, SAM columns 12 and up joined by TAB, exactly as `samtools view`
+prints them (`""` for a read without tags). They are stored as
+`signal_channels/tags`, a flat `uint8` dataset with
+`@compression = 18` (SAM_TAGS, `docs/codecs/sam_tags.md`), one blob
+per block under `blocks_v1` and one blob for the run under the
+whole-channel layout. A run none of whose reads carries a tag has no
+`tags` dataset, and a file with at least one such dataset lists
+`opt_sam_tags` in `@ttio_features`. Readers without M101 ignore the
+dataset and lose the tags; they read everything else unchanged.
+
+Fidelity is the SAM text. BAM stores integer tags with a width (`c`,
+`C`, `s`, `S`, `i`, `I`) that `samtools view` prints as `i`; the width
+is not kept, and an exporter that writes BAM lets samtools choose it
+again. Float (`f`) and array (`B`) values keep the text samtools
+printed.
+
+MD:Z and NM:i are recomputed from the reference (SAM_TAGS `DERIVED`
+entries) only in a blob whose block codes `sequences` with REF_DIFF_V2,
+so a reader that can decode the sequences can decode the tags. The
+reference is the one the REF_DIFF_V2 blob header names, resolved the
+same way (embedded under `/study/references/`, or `REF_PATH`). Any
+other blob stores MD and NM like other tags.
+
+Per-AU encryption (§9.1.1) encrypts the tags with the sequences, one
+AU per read whose plaintext is the read's tag text; the encrypted
+container holds `tags_segments` in place of `tags`. A whole-channel
+run with tags refuses per-AU and region encryption rather than leave
+MD strings in plaintext.
 
 ## 11. Subjects + Samples (v0.11)
 

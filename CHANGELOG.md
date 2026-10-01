@@ -12,6 +12,27 @@ public API is stable from onward.
 ## [Unreleased]
 
 ### Added
+- **M101 SAM optional tags.** The BAM, SAM and CRAM importers keep the
+  optional fields (SAM columns 12 and up) instead of discarding them,
+  so a `.tio` made from a BAM is a lossless copy of its records. Each
+  read's tags are its tab-joined tag text as `samtools view` prints
+  it (`WrittenGenomicRun.tags`, `AlignedRead.tags`), stored as the
+  genomic `tags` channel with the new SAM_TAGS codec (id 18), and the
+  exporters write them back after column 11. SAM_TAGS is a CRAM-style
+  column codec in the shared native library: a tag-line dictionary per
+  blob, one column per tag key, MD:Z and NM:i recomputed from the
+  reference when the block's sequences are REF_DIFF_V2, and integers
+  equal to an earlier tag in the read (novoalign's UQ repeats AS)
+  stored as back-references. On the GIAB HG002 2x250 chr22 slice
+  (10.6 M reads) the tags take 20.5 MB, 1.93 bytes per read, against
+  59.6 MB for CRAM 3.1 `small` and 776.5 MB of tag text, round-trip
+  byte-exact. Files without tags are unchanged: no `tags` dataset, no
+  `blocks/index` columns, no `opt_sam_tags` flag. Per-AU encryption
+  encrypts the tags with the sequences (an MD string lists the read's
+  variants), signatures cover them, plaintext and encrypted transport
+  carry them, and `bam_dump` gains a `tags` key. Format-spec §10.13,
+  `docs/codecs/sam_tags.md`, binding decisions §96–§100.
+
 - **M100 writable dataset open.** Objective-C and Java gain the
   public writable reopen Python already has
   (`SpectralDataset.open(path, writable=True)`):

@@ -971,6 +971,7 @@ class TransportReader:
                                    if gd["template_lengths"]
                                    else np.zeros(n, dtype=np.int32)),
                 chromosomes=list(gd["chromosomes"]),
+                tags=list(gd["tags"]) if gd.get("any_tags") else None,
                 bulk_v2_blobs=bulk_obj,
             )
 
@@ -1064,6 +1065,10 @@ def _new_genomic_accumulator() -> dict:
         "mate_chromosomes": [],
         "mate_positions": [],
         "template_lengths": [],
+        # M101: per-read SAM tag text; any_tags marks a stream that
+        # carried the tags channel at all.
+        "tags": [],
+        "any_tags": False,
     }
 
 
@@ -1092,6 +1097,7 @@ def _ingest_genomic_access_unit_bytes(gd: dict, payload: bytes) -> None:
     cigar_str = ""
     name_str = ""
     mate_chr_str = ""
+    tags_str = ""
     for ch in au.channels:
         if ch.precision != int(Precision.UINT8):
             raise NotImplementedError(
@@ -1116,6 +1122,10 @@ def _ingest_genomic_access_unit_bytes(gd: dict, payload: bytes) -> None:
             name_str = decoded.decode("utf-8")
         elif ch.name == "mate_chromosome":
             mate_chr_str = decoded.decode("utf-8")
+        elif ch.name == "tags":
+            tags_str = decoded.decode("utf-8")
+            gd["any_tags"] = True
+    gd["tags"].append(tags_str)
     gd["cigars"].append(cigar_str)
     gd["read_names"].append(name_str)
     gd["mate_chromosomes"].append(mate_chr_str)

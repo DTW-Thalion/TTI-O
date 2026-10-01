@@ -165,6 +165,14 @@ class WrittenGenomicRun:
     # stored unchecked. Java/ObjC: readRole.
     read_role: str | None = None
 
+    # M101 — SAM optional fields per read (columns 12+, tab-joined as
+    # samtools prints them; "" for a read without tags). None, or a list
+    # whose entries are all "", writes no ``tags`` channel. Stored with
+    # SAM_TAGS (codec id 18); MD:Z / NM:i are recomputed from the
+    # reference when the sequences channel is REF_DIFF_V2. Java/ObjC:
+    # tags.
+    tags: list[str] | None = None
+
     # M97 — REF_DIFF_V2 slice byte budget: a slice closes before the
     # read that would push it past this many bases (the 10,000-read
     # cap still applies). 0 keeps the fixed-count rule. Writer policy

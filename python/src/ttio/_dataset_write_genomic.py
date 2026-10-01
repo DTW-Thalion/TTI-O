@@ -870,10 +870,62 @@ def _write_genomic_run(parent, name: str, run: WrittenGenomicRun,
             )
         _write_mate_info_inline_v2(sc, run)
 
+    # M101 — SAM optional fields. A run whose reads carry no tags
+    # writes no tags channel, so tag-less files are unchanged.
+    if run.tags is not None and any(run.tags):
+        _write_tags(sc, run)
+
     # Per-run provenance — same pattern as _write_run.
     if run.provenance_records:
         prov = rg.create_group("provenance")
         _write_provenance(prov, run.provenance_records, dataset_name="steps")
+
+
+def _write_tags(sc, run: WrittenGenomicRun) -> None:
+    """Write ``signal_channels/tags`` through SAM_TAGS (codec id 18).
+
+    MD:Z / NM:i are recomputed from the reference only when the
+    sequences channel went through REF_DIFF_V2, so a reader that can
+    decode the sequences can always decode the tags (binding
+    decision §96). REF_DIFF_V2 runs hold one chromosome: reads on it
+    get the reference, every other read (unmapped '*') none.
+    """
+    from .codecs._context import CodecContext, DecodedChannel
+    from .codecs._registry import CODEC_REGISTRY
+    from .enums import Compression as _Compression, Precision as _Precision
+
+    n = len(run.cigars)
+    if len(run.tags) != n:
+        raise ValueError(f"WrittenGenomicRun.tags has {len(run.tags)} entries for {n} reads")
+    try:
+        derive = sc.open_group("sequences").has_child("refdiff_v2")
+    except Exception:
+        derive = False
+    refs: list = []
+    chrom_ids = np.full(n, 0xFFFF, dtype=np.uint16)
+    if derive and run.reference_chrom_seqs:
+        names = sorted(set(run.chromosomes) - {"*", ""})
+        if len(names) == 1 and run.reference_chrom_seqs.get(names[0]) is not None:
+            refs = [run.reference_chrom_seqs[names[0]]]
+            chrom_ids[np.asarray(run.chromosomes, dtype=object) == names[0]] = 0
+    offsets = np.zeros(n + 1, dtype=np.uint64)
+    if n:
+        np.cumsum(np.asarray(run.lengths, dtype=np.uint64), out=offsets[1:])
+    ctx = CodecContext(
+        sequences=bytes(np.asarray(run.sequences, dtype=np.uint8).tobytes()) if refs else None,
+        offsets=offsets,
+        cigar_strings=list(run.cigars),
+        positions=np.asarray(run.positions, dtype=np.int64),
+        own_chrom_ids=chrom_ids,
+        tag_references=refs,
+    )
+    blob = CODEC_REGISTRY[_Compression.SAM_TAGS].encode(
+        DecodedChannel.of_str_list(list(run.tags)), ctx).dataset_bytes
+    arr = np.frombuffer(blob, dtype=np.uint8)
+    ds = sc.create_dataset("tags", _Precision.UINT8, length=int(arr.shape[0]),
+                           chunk_size=io.DEFAULT_SIGNAL_CHUNK, compression=_Compression.NONE)
+    ds.write(arr)
+    io.write_int_attr(ds, "compression", int(_Compression.SAM_TAGS), dtype="<u1")
 
 
 def _build_chrom_id_table(chromosomes: list[str]) -> "tuple[np.ndarray, dict[str, int]]":

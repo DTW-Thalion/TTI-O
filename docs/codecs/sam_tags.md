@@ -27,7 +27,10 @@ chromosome ids, and the reference bases, as side input. The blob does
 not store them.
 
 Phase 0 (`tools/prototypes/m101_sam_tags/`): 1.93 bytes per read on the
-GIAB HG002 2x250 chr22 slice against 5.61 for CRAM 3.1 `small`.
+GIAB HG002 2x250 chr22 slice against 2.57 for CRAM 3.1 `small`; on
+the bwa-aligned NA12878 WES chr22 slice CRAM is ahead (1.27 against
+3.24 B/read) because of the long `XA:Z` strings
+(`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`).
 
 ---
 

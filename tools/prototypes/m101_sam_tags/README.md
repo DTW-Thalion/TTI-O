@@ -69,25 +69,41 @@ qualities), 79 blocks.
 |---|---:|---:|
 | SAM tag text (with separators) | 776,524,017 | 73.02 |
 | Text channel: varint length + text, rANS order-1 | 181,623,170 | 17.08 |
-| CRAM 3.1 `small`, aux series + TL | 59,616,292 | 5.61 |
+| CRAM 3.1 `small`, aux series + TL | 27,304,364 | 2.57 |
 | **Column codec, MD/NM derived** | **20,532,130** | **1.93** |
 
 Per tag, prototype against CRAM 3.1 `small` (from `samtools cram-size -v`):
 
 | Tag | Prototype | CRAM 3.1 small | Note |
 |---|---:|---:|---|
-| MD:Z | 0 | 29,079,158 | derived on 10,457,612 / 10,457,612 reads |
-| NM:i | 0 | 3,232,952 | derived on every read |
-| UQ:i | 0 | 5,937,126 | DUP of AS on every read |
-| PQ:i | 8,486,542 | 9,062,003 | DUP on 1,871,844 reads |
-| AS:i | 6,538,917 | 5,939,784 | |
-| SM:i | 2,126,247 | 2,142,639 | |
+| MD:Z | 0 | 0 | both recompute it; derived on 10,457,612 / 10,457,612 reads |
+| NM:i | 0 | 0 | both recompute it |
+| UQ:i | 0 | 5,937,165 | DUP of AS on every read |
+| PQ:i | 8,486,542 | 9,062,129 | DUP on 1,871,844 reads |
+| AS:i | 6,538,917 | 5,939,823 | |
+| SM:i | 2,126,247 | 2,142,712 | |
 | AM:i | 1,039,709 | 3,177,497 | DUP of SM on 8,264,860 reads |
 | tag lines | 2,287,480 | 984,859 | dictionary + per-read ids |
-| PG, ZS, NH | 53,156 | 60,274 | |
+| PG, ZS, NH | 53,156 | 60,179 | |
 
-**CRAM did not drop MD/NM here.** It stored both verbatim, although every
-value matches the recomputation.
+**Correction (2026-10-01).** The first CRAM baseline used a reference
+holding chr22 alone. The BAM header names every GRCh38 contig, so
+samtools switched to `embed_ref=2`: it embedded a reference built from
+the reads, could not recompute MD/NM against it, and stored them verbatim
+(29.1 + 3.2 MB). That gave 59,616,292 tag bytes, a CRAM figure 2.2× too
+high, and a claimed 2.9× advantage that does not hold. The table above
+uses the full `GRCh38_full_analysis_set_plus_decoy_hla.fa`, where CRAM
+also drops MD/NM, and the codec's advantage on this slice is 25%. It
+comes from the DUP back-references (UQ = AS, AM = SM). CRAM's tag-line
+series is smaller.
+
+On the NA12878 WES chr22 slice (bwa, 992,974 reads) the codec is behind
+CRAM: 3,218,274 tag bytes against 1,259,902 for CRAM 3.1 `small`, almost
+all of it bwa's `XA:Z` alternative-hit strings (2.19 MB against 0.93 MB)
+and the tag-line ids (0.18 MB against 0.03 MB). Both formats recompute
+MD/NM there too. A tokenised text column for `XA`-like values and an
+order-1 coder for the line ids are the follow-ups. Full numbers:
+`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`.
 
 **Without a reference** (first 400,000 reads), MD/NM must be stored:
 
@@ -110,7 +126,10 @@ samtools view -b -o hg002_2x250.chr22.bam \
 samtools faidx https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa chr22 > GRCh38_analysis_set.chr22.fa
 python tools/prototypes/m101_sam_tags/tags_codec_proof.py hg002_2x250.chr22.bam \
   --reference GRCh38_analysis_set.chr22.fa --json proof_full.json
-samtools view -C -T GRCh38_analysis_set.chr22.fa --output-fmt-option version=3.1 \
-  --output-fmt-option small -o chr22.3.1.small.cram hg002_2x250.chr22.bam
-samtools cram-size -v chr22.3.1.small.cram
+# CRAM needs a reference covering every @SQ of the header, or samtools
+# embeds one built from the reads (embed_ref=2) and keeps MD/NM.
+curl -o GRCh38_full.fa https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/GRCh38_reference_genome/GRCh38_full_analysis_set_plus_decoy_hla.fa
+samtools faidx GRCh38_full.fa
+samtools view -T GRCh38_full.fa -O cram,version=3.1,small -o chr22.small.cram hg002_2x250.chr22.bam
+samtools cram-size -v chr22.small.cram
 ```

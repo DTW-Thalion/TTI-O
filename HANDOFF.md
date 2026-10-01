@@ -12,8 +12,11 @@ column codec in the shared native library:
 - repeated integers stored as back-references.
 
 Phase 0 proved it on the GIAB HG002 2x250 chr22 slice before any SDK
-code: 1.93 B/read against 5.61 for CRAM 3.1 `small`, byte-exact over
-10.6 M reads. Format-spec §10.13, `docs/codecs/sam_tags.md`, binding
+code: 1.93 B/read against 2.57 for CRAM 3.1 `small`, byte-exact over
+10.6 M reads. (The Phase 0 CRAM baseline first read 5.61 B/read: its
+chr22-only reference made samtools embed a reference built from the
+reads and keep MD/NM. Corrected 2026-10-01. On bwa-aligned NA12878 WES
+CRAM is ahead on tags, 1.27 against 3.24 B/read, because of `XA:Z`.) Format-spec §10.13, `docs/codecs/sam_tags.md`, binding
 decisions §96–§100. Branch: `m101-sam-optional-tags`.
 
 | Task | Scope | Status | Spec proof |
@@ -24,7 +27,7 @@ decisions §96–§100. Branch: `m101-sam-optional-tags`.
 | **B ObjC** | Mirror A: `TTIOSamTags` over the kernel, `TTIOBamReader` keeps `fp[11]`, writer/reader/exporter/per-AU/transport/signatures, `TtioBamDump` `tags` | ✅ `TestM101SamTags` 76 checks | — |
 | **C Java** | Mirror A: JNI entry points, `BamReader.addRecord` formats `getAttributes()` as samtools text (float and `B` arrays included), `WrittenGenomicRun.tags` record component, writer/reader/`BamWriter`/per-AU/transport/signatures, `BamDump` `tags` | ✅ `M101SamTagsTest` 17 tests | `SamTagText` matches `samtools view` on every tag type and a seeded float sweep (`%g`, half-even on the exact binary value) |
 | **D Conformance** | 3×3 writer × reader matrix over a tagged fixture (REF_DIFF with derivation, no reference, tags first appearing in a later block), `bam_dump` cross-language JSON over a tagged SAM fixture, per-AU encryptor × decryptor cells | ✅ `test_m101_sam_tags_matrix.py` 29/29 | — |
-| **E Release + re-measure** | WORKPLAN item 2: cut the release and re-measure NA12878 WES chr22, HG002 chr22 and whole HG002 against CRAM 3.1 | ⏳ | — |
+| **E Release + re-measure** | WORKPLAN item 2: cut the release and re-measure NA12878 WES chr22, HG002 chr22 and whole HG002 against CRAM 3.1 | chr22 slices ✅ (`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`: WES 44.7 MB vs CRAM small 33.3 MB, HG002 chr22 1,020.5 MB vs 834.6 MB); whole HG002 and the release ⏳ | CRAM reference must cover every header contig |
 | **F Docs** | format-spec §10.4 row 18, §10.12.2 triple, §10.12.6, §10.13; codec doc; feature-flags; transport-spec 4.3.1 / 4.24; genomic-runs; vendor-formats; binding decisions §96–§100; CHANGELOG; this file | ✅ | — |
 
 **Fidelity contract:** decode returns each read's tag text exactly as

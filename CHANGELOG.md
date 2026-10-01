@@ -25,8 +25,10 @@ public API is stable from onward.
   equal to an earlier tag in the read (novoalign's UQ repeats AS)
   stored as back-references. On the GIAB HG002 2x250 chr22 slice
   (10.6 M reads) the tags take 20.5 MB, 1.93 bytes per read, against
-  59.6 MB for CRAM 3.1 `small` and 776.5 MB of tag text, round-trip
-  byte-exact. Files without tags are unchanged: no `tags` dataset, no
+  27.3 MB for CRAM 3.1 `small` and 776.5 MB of tag text, round-trip
+  byte-exact; on the bwa-aligned NA12878 WES chr22 slice CRAM is ahead
+  (1.26 MB against 3.22 MB), mostly on `XA:Z` strings
+  (`docs/benchmarks/2026-10-01-m101-cram-remeasure.md`). Files without tags are unchanged: no `tags` dataset, no
   `blocks/index` columns, no `opt_sam_tags` flag. Per-AU encryption
   encrypts the tags with the sequences (an MD string lists the read's
   variants), signatures cover them, plaintext and encrypted transport

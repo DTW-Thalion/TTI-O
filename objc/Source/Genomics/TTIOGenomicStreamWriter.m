@@ -138,6 +138,7 @@ static const NSUInteger kIndexArrayChunk = 65536;
     NSMutableDictionary<NSString *, id<TTIOStorageDataset>> *_channelDs;
     NSMutableDictionary<NSString *, id<TTIOStorageDataset>> *_idxDs;
     id<TTIOStorageDataset> _indexDs;
+    BOOL _withTags;     // the index carries the tags columns (M101)
     BOOL _embedded;
     BOOL _closed;
     NSMutableArray<TTIOWrittenGenomicRun *> *_legacyParts;
@@ -154,6 +155,7 @@ static const NSUInteger kIndexArrayChunk = 65536;
 + (NSUInteger)channelChunk { return kChannelChunk; }
 
 static NSArray *gIndexFields = nil;
+static NSArray *gIndexFieldsWithTags = nil;
 static pthread_once_t gIndexFieldsOnce = PTHREAD_ONCE_INIT;
 
 static void ttioBuildIndexFields(void)
@@ -164,17 +166,22 @@ static void ttioBuildIndexFields(void)
         [f addObject:[TTIOCompoundField fieldWithName:@"n_reads" kind:TTIOCompoundFieldKindUInt32]];
         [f addObject:[TTIOCompoundField fieldWithName:@"base_start" kind:TTIOCompoundFieldKindUInt64]];
         [f addObject:[TTIOCompoundField fieldWithName:@"n_bases" kind:TTIOCompoundFieldKindUInt64]];
-        for (NSString *ch in [TTIOGenomicBlocks blockChannels]) {
+        for (NSString *ch in [TTIOGenomicBlocks requiredBlockChannels]) {
             [f addObject:[TTIOCompoundField fieldWithName:[ch stringByAppendingString:@"_off"]
                                                      kind:TTIOCompoundFieldKindUInt64]];
             [f addObject:[TTIOCompoundField fieldWithName:[ch stringByAppendingString:@"_len"]
                                                      kind:TTIOCompoundFieldKindUInt64]];
         }
-        for (NSString *ch in [TTIOGenomicBlocks blockChannels]) {
+        for (NSString *ch in [TTIOGenomicBlocks requiredBlockChannels]) {
             [f addObject:[TTIOCompoundField fieldWithName:[ch stringByAppendingString:@"_codec"]
                                                      kind:TTIOCompoundFieldKindUInt32]];
         }
         gIndexFields = [f copy];
+        // M101: the tags triple trails the required columns.
+        [f addObject:[TTIOCompoundField fieldWithName:@"tags_off" kind:TTIOCompoundFieldKindUInt64]];
+        [f addObject:[TTIOCompoundField fieldWithName:@"tags_len" kind:TTIOCompoundFieldKindUInt64]];
+        [f addObject:[TTIOCompoundField fieldWithName:@"tags_codec" kind:TTIOCompoundFieldKindUInt32]];
+        gIndexFieldsWithTags = [f copy];
     }
 }
 
@@ -182,6 +189,18 @@ static void ttioBuildIndexFields(void)
 {
     pthread_once(&gIndexFieldsOnce, ttioBuildIndexFields);
     return gIndexFields;
+}
+
++ (NSArray<TTIOCompoundField *> *)indexFieldsWithTags
+{
+    pthread_once(&gIndexFieldsOnce, ttioBuildIndexFields);
+    return gIndexFieldsWithTags;
+}
+
++ (NSArray<TTIOCompoundField *> *)indexFieldsForRows:(NSArray<NSDictionary *> *)rows
+{
+    BOOL has = rows.count > 0 && rows[0][@"tags_off"] != nil;
+    return has ? [self indexFieldsWithTags] : [self indexFields];
 }
 
 - (instancetype)initWithStudyGroup:(id<TTIOStorageGroup>)study
@@ -300,6 +319,7 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     r.optLegacyWholeChannel = NO;
     r.readRole = _opt.readRole;
     r.refDiffSliceBytes = _opt.refDiffSliceBytes;
+    r.tags = run.tags;
     return r;
 }
 
@@ -341,6 +361,7 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     run.referenceChromSeqs = _opt.referenceChromSeqs;
     run.readRole = _opt.readRole;
     run.refDiffSliceBytes = _opt.refDiffSliceBytes;
+    run.tags = @[r.tags ?: @""];
     return run;
 }
 
@@ -522,15 +543,22 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
 
 - (BOOL)_writeEncoded:(TTIOWrittenGenomicRun *)block blobs:(TTIOBlockBlobs *)blobs error:(NSError **)error
 {
+    BOOL blockHasTags = blobs.blobs[@"tags"].length > 0;
+    // The first block decides the index schema; tags arriving later
+    // upgrade it once (M101).
+    if (_rg == nil) _withTags = blockHasTags;
     if (![self _ensureLayout:error]) return NO;
+    if (blockHasTags && !_withTags && ![self _addTagsColumns:error]) return NO;
 
-    NSArray<TTIOCompoundField *> *fields = [[self class] indexFields];
+    NSArray<TTIOCompoundField *> *fields = _withTags
+        ? [[self class] indexFieldsWithTags] : [[self class] indexFields];
     NSMutableDictionary *row = [NSMutableDictionary dictionaryWithCapacity:fields.count];
     row[@"read_start"] = @(_readCount);
     row[@"n_reads"] = @((uint32_t)blobs.nReads);
     row[@"base_start"] = @(_baseCount);
     row[@"n_bases"] = @(blobs.nBases);
     for (NSString *ch in [TTIOGenomicBlocks blockChannels]) {
+        if ([ch isEqualToString:@"tags"] && !_withTags) continue;
         NSData *data = blobs.blobs[ch] ?: [NSData data];
         NSNumber *codec = blobs.codecs[ch] ?: @0;
         row[[ch stringByAppendingString:@"_codec"]] = @((uint32_t)[codec unsignedIntegerValue]);
@@ -717,7 +745,9 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     }
     id<TTIOStorageGroup> blocks = [run createGroupNamed:@"blocks" error:error];
     if (!blocks) return NO;
-    _indexDs = [blocks createCompoundDatasetNamed:@"index" fields:[[self class] indexFields]
+    _indexDs = [blocks createCompoundDatasetNamed:@"index"
+                                           fields:(_withTags ? [[self class] indexFieldsWithTags]
+                                                             : [[self class] indexFields])
                                             count:0 extendable:YES chunkRows:kIndexChunkRows error:error];
     if (!_indexDs) return NO;
     id<TTIOStorageGroup> idx = [run createGroupNamed:@"genomic_index" error:error];
@@ -743,6 +773,34 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     }
     if (![run createGroupNamed:@"signal_channels" error:error]) return NO;
     _rg = run;
+    return YES;
+}
+
+/** The first block with tags arrives after blocks without: give the
+ *  index the tags columns, the earlier blocks an empty range. */
+- (BOOL)_addTagsColumns:(NSError **)error
+{
+    id<TTIOStorageGroup> blocks = [_rg openGroupNamed:@"blocks" error:error];
+    if (!blocks) return NO;
+    NSMutableArray *rows = [NSMutableArray array];
+    if (_blockCount > 0) {
+        NSArray *old = [_indexDs readRows:error];
+        if (!old) return NO;
+        for (NSDictionary *r in old) {
+            NSMutableDictionary *m = [r mutableCopy];
+            m[@"tags_off"] = @0ULL;
+            m[@"tags_len"] = @0ULL;
+            m[@"tags_codec"] = @((uint32_t)0);
+            [rows addObject:m];
+        }
+    }
+    _indexDs = nil;
+    if (![blocks deleteChildNamed:@"index" error:error]) return NO;
+    _indexDs = [blocks createCompoundDatasetNamed:@"index" fields:[[self class] indexFieldsWithTags]
+                                            count:0 extendable:YES chunkRows:kIndexChunkRows error:error];
+    if (!_indexDs) return NO;
+    if (rows.count > 0 && ![_indexDs appendData:rows error:error]) return NO;
+    _withTags = YES;
     return YES;
 }
 

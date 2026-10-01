@@ -55,6 +55,10 @@
 /** Template length (TLEN). */
 @property (nonatomic, readonly) int32_t templateLength;
 
+/** M101: the SAM optional fields (columns 12+), tab-joined as
+ *  samtools prints them; <code>@""</code> when the read has none. */
+@property (nonatomic, readonly, copy) NSString *tags;
+
 /** @return <code>YES</code> if the read is mapped (SAM flag 0x4
  *          not set). */
 - (BOOL)isMapped;
@@ -94,6 +98,25 @@
                   mateChromosome:(NSString *)mateChromosome
                     matePosition:(int64_t)matePosition
                   templateLength:(int32_t)templateLength;
+
+/**
+ * Initialiser carrying the read's SAM optional fields (M101); the
+ * designated initialiser above delegates here with <code>@""</code>.
+ *
+ * @return An initialised aligned read.
+ */
+- (instancetype)initWithReadName:(NSString *)readName
+                      chromosome:(NSString *)chromosome
+                        position:(int64_t)position
+                  mappingQuality:(uint8_t)mappingQuality
+                           cigar:(NSString *)cigar
+                        sequence:(NSString *)sequence
+                       qualities:(NSData *)qualities
+                           flags:(uint32_t)flags
+                  mateChromosome:(NSString *)mateChromosome
+                    matePosition:(int64_t)matePosition
+                  templateLength:(int32_t)templateLength
+                            tags:(NSString *)tags;
 @end
 
 #endif

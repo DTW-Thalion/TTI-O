@@ -451,7 +451,9 @@ static BOOL emitBlocksV1Sidecars(TTIOTransportWriter *writer,
                         auSequence:0
                            payload:payload];
 
-    NSArray<NSString *> *blockChannels = [TTIOGenomicBlocks blockChannels];
+    // The index's own channel set: a run without tags sends the five
+    // required entries, exactly as before M101.
+    NSArray<NSString *> *blockChannels = table.channels;
     for (NSUInteger b = 0; b < table.count; b++) {
         NSMutableData *bp = [NSMutableData data];
         appendU32LE(bp, (uint32_t)b);
@@ -803,9 +805,10 @@ static NSDictionary *decodeBlockSidecar(NSData *payload)
             id<TTIOStorageGroup> gSig = [gRun openGroupNamed:@"signal_channels" error:error];
             if (!gRun || !gSig) return NO;
 
-            // Genomic only encrypts sequences + qualities (M90.1).
+            // Genomic encrypts sequences + qualities (M90.1) and, when
+            // the run carries them, the SAM tags (M101).
             NSMutableArray<NSString *> *gChannelNames = [NSMutableArray array];
-            for (NSString *cn in @[@"sequences", @"qualities"]) {
+            for (NSString *cn in @[@"sequences", @"qualities", @"tags"]) {
                 NSString *segName = [NSString stringWithFormat:@"%@_segments", cn];
                 if ([gSig hasChildNamed:segName]) [gChannelNames addObject:cn];
             }
@@ -1045,7 +1048,7 @@ static NSDictionary *decodeBlockSidecar(NSData *payload)
             if (!gRun || !gSig || !gIdx) return NO;
 
             NSMutableArray<NSString *> *gChannelNames = [NSMutableArray array];
-            for (NSString *cn in @[@"sequences", @"qualities"]) {
+            for (NSString *cn in @[@"sequences", @"qualities", @"tags"]) {
                 NSString *segName = [NSString stringWithFormat:@"%@_segments", cn];
                 if ([gSig hasChildNamed:segName]) [gChannelNames addObject:cn];
             }
@@ -1497,14 +1500,6 @@ static BOOL writeBlocksV1GenomicRun(id<TTIOStorageGroup> gRunsGroup,
     id<TTIOStorageGroup> blocks = [gRun createGroupNamed:@"blocks"
                                                     error:error];
     if (!blocks) return NO;
-    id<TTIOStorageDataset> idxDs = [blocks
-        createCompoundDatasetNamed:@"index"
-                            fields:[TTIOGenomicStreamWriter indexFields]
-                             count:0
-                        extendable:YES
-                         chunkRows:1024
-                             error:error];
-    if (!idxDs) return NO;
     NSMutableArray *rows = [NSMutableArray arrayWithCapacity:sidecars.count];
     for (NSDictionary *bs in sidecars) {
         NSMutableDictionary *row = [NSMutableDictionary dictionary];
@@ -1522,6 +1517,15 @@ static BOOL writeBlocksV1GenomicRun(id<TTIOStorageGroup> gRunsGroup,
         }
         [rows addObject:row];
     }
+    // The index carries the tags triple when the sender's did (M101).
+    id<TTIOStorageDataset> idxDs = [blocks
+        createCompoundDatasetNamed:@"index"
+                            fields:[TTIOGenomicStreamWriter indexFieldsForRows:rows]
+                             count:0
+                        extendable:YES
+                         chunkRows:1024
+                             error:error];
+    if (!idxDs) return NO;
     if (rows.count > 0 && ![idxDs appendData:rows error:error]) return NO;
 
     id<TTIOStorageGroup> gIdx = [gRun createGroupNamed:@"genomic_index"

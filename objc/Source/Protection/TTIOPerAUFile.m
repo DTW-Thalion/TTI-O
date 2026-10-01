@@ -658,6 +658,43 @@ static NSData *decryptChannelWithDispatch(
 // BEFORE deleting anything, and refuses the run when a blob is not
 // reproducible.
 
+// M101: the SAM tags are encrypted with the bases they describe (an
+// MD string lists the read's mismatches). One AU per read, the
+// plaintext being the read's UTF-8 tag text; "tags" is handled as
+// text, not bytes.
+static NSArray<NSString *> *kBlocksV1Channels(void)
+{
+    return @[@"sequences", @"qualities", @"tags"];
+}
+
+// Split a decrypted flat tags plaintext into one string per AU, using
+// the segments' plaintext lengths.
+static NSArray<NSString *> *ttioSplitTagTexts(NSData *flat,
+                                              NSArray<TTIOChannelSegment *> *segs,
+                                              NSError **error)
+{
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:segs.count];
+    const uint8_t *p = (const uint8_t *)flat.bytes;
+    NSUInteger at = 0;
+    for (TTIOChannelSegment *s in segs) {
+        NSUInteger ln = s.length;
+        if (at + ln > flat.length) {
+            if (error) *error = makeErr(5, @"per-AU tags: segment lengths exceed the plaintext");
+            return nil;
+        }
+        NSString *t = ln ? [[NSString alloc] initWithBytes:p + at length:ln
+                                                  encoding:NSUTF8StringEncoding]
+                         : @"";
+        if (t == nil) {
+            if (error) *error = makeErr(5, @"per-AU tags: plaintext is not valid UTF-8");
+            return nil;
+        }
+        [out addObject:t];
+        at += ln;
+    }
+    return out;
+}
+
 static BOOL ttioIsBlocksV1(id<TTIOStorageGroup> runGroup)
 {
     NSString *layout = readStringAttr(runGroup, @"layout");
@@ -795,6 +832,7 @@ ttioBlocksV1BlockRun(TTIOGenomicRun *rd,
     NSMutableArray *readNames = [NSMutableArray arrayWithCapacity:nn];
     NSMutableArray *mateChroms = [NSMutableArray arrayWithCapacity:nn];
     NSMutableArray *chroms = [NSMutableArray arrayWithCapacity:nn];
+    NSMutableArray *tags = [NSMutableArray arrayWithCapacity:nn];
     NSMutableData *seq = [NSMutableData data];
     NSMutableData *qual = [NSMutableData data];
     for (NSUInteger i = 0; i < nn; i++) {
@@ -817,6 +855,7 @@ ttioBlocksV1BlockRun(TTIOGenomicRun *rd,
             [readNames addObject:r.readName ?: @""];
             [mateChroms addObject:r.mateChromosome ?: @""];
             [chroms addObject:r.chromosome ?: @""];
+            [tags addObject:r.tags ?: @""];
         }
     }
 
@@ -862,6 +901,8 @@ ttioBlocksV1BlockRun(TTIOGenomicRun *rd,
               signalCompression:TTIOCompressionZlib
            signalCodecOverrides:overrides];
     if (refSeqs != nil) block.referenceChromSeqs = refSeqs;
+    // M101: the decrypt walker overrides these with the decrypted text.
+    block.tags = tags;
     NSString *role = readStringAttr(runGroup, @"read_role");
     if (role.length > 0) block.readRole = role;
     int64_t slice = readIntAttr(runGroup, @"ref_diff_slice_bytes", 0);
@@ -903,8 +944,9 @@ static BOOL ttioEncryptBlocksV1Run(id<TTIOStorageGroup> study,
         [runGroup openGroupNamed:@"signal_channels" error:error];
     if (!sig) return NO;
     NSMutableArray<NSString *> *channels = [NSMutableArray array];
-    if ([sig hasChildNamed:@"sequences"]) [channels addObject:@"sequences"];
-    if ([sig hasChildNamed:@"qualities"]) [channels addObject:@"qualities"];
+    for (NSString *ch in kBlocksV1Channels()) {
+        if ([sig hasChildNamed:ch]) [channels addObject:ch];
+    }
     if (channels.count == 0) return YES;
     if (![sig respondsToSelector:@selector(unwrap)]) {
         if (error) *error = makeErr(3,
@@ -930,6 +972,7 @@ static BOOL ttioEncryptBlocksV1Run(id<TTIOStorageGroup> study,
     }
 
     BOOL ok = YES;
+    unsigned long long tagOffset = 0;   // global plaintext offset of the tags channel
     for (NSUInteger b = 0; ok && b < table.count; b++) {
         @autoreleasepool {
             NSData *seq = nil, *qual = nil;
@@ -947,18 +990,46 @@ static BOOL ttioEncryptBlocksV1Run(id<TTIOStorageGroup> study,
             NSDictionary *plain = @{@"sequences": seq ?: [NSData data],
                                     @"qualities": qual ?: [NSData data]};
             for (NSString *ch in channels) {
+                NSData *chPlain = plain[ch];
+                const uint64_t *chOff = localOff;
+                const uint32_t *chLen = localLen;
+                unsigned long long base = [table baseStartAt:b];
+                // Precise lifetime: only interior pointers are used below.
+                __attribute__((objc_precise_lifetime)) NSMutableData *tagOff = nil;
+                __attribute__((objc_precise_lifetime)) NSMutableData *tagLen = nil;
+                if ([ch isEqualToString:@"tags"]) {
+                    // One AU per read: the read's UTF-8 tag text, with
+                    // the channel's own running global offset.
+                    NSMutableData *flat = [NSMutableData data];
+                    tagOff = [NSMutableData dataWithLength:nn * sizeof(uint64_t)];
+                    tagLen = [NSMutableData dataWithLength:nn * sizeof(uint32_t)];
+                    uint64_t *to = (uint64_t *)tagOff.mutableBytes;
+                    uint32_t *tl = (uint32_t *)tagLen.mutableBytes;
+                    for (NSUInteger i = 0; i < nn; i++) {
+                        NSString *t = i < block.tags.count ? block.tags[i] : @"";
+                        NSData *tb = [t dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+                        to[i] = (uint64_t)flat.length;
+                        tl[i] = (uint32_t)tb.length;
+                        [flat appendData:tb];
+                    }
+                    chPlain = flat;
+                    chOff = to;
+                    chLen = tl;
+                    base = tagOffset;
+                    tagOffset += flat.length;
+                }
                 NSArray<TTIOChannelSegment *> *segs =
                     [TTIOPerAUEncryption
-                        encryptChannelToSegments:plain[ch]
-                                          offsets:localOff
-                                          lengths:localLen
+                        encryptChannelToSegments:chPlain
+                                          offsets:chOff
+                                          lengths:chLen
                                          nSpectra:nn
                                   bytesPerElement:1
                                         datasetId:datasetId
                                       channelName:ch
                                               key:key
                                            auBase:(uint32_t)r0
-                                       offsetBase:[table baseStartAt:b]
+                                       offsetBase:base
                                             error:error];
                 if (!segs) { ok = NO; break; }
                 NSMutableArray *rows =
@@ -1029,7 +1100,7 @@ static BOOL ttioBlocksV1RewriteIndex(id<TTIOStorageGroup> runGroup,
     if (![blocks deleteChildNamed:@"index" error:error]) return NO;
     id<TTIOStorageDataset> out = [blocks
         createCompoundDatasetNamed:@"index"
-                            fields:[TTIOGenomicStreamWriter indexFields]
+                            fields:[TTIOGenomicStreamWriter indexFieldsForRows:patched]
                              count:0
                         extendable:YES
                          chunkRows:1024
@@ -1051,7 +1122,7 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
         [runGroup openGroupNamed:@"signal_channels" error:error];
     if (!sig) return NO;
     NSMutableArray<NSString *> *channels = [NSMutableArray array];
-    for (NSString *ch in @[@"sequences", @"qualities"]) {
+    for (NSString *ch in kBlocksV1Channels()) {
         if ([sig hasChildNamed:
                 [NSString stringWithFormat:@"%@_segments", ch]]) {
             [channels addObject:ch];
@@ -1128,7 +1199,14 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                                          auBase:(uint32_t)r0
                                           error:error];
                 if (!plain) return NO;
-                decrypted[ch] = plain;
+                if ([ch isEqualToString:@"tags"]) {
+                    // M101: tags come back as one string per read.
+                    NSArray *texts = ttioSplitTagTexts(plain, segs, error);
+                    if (!texts) return NO;
+                    decrypted[ch] = texts;
+                } else {
+                    decrypted[ch] = plain;
+                }
             }
 
             TTIOBlockView *view =
@@ -1144,6 +1222,9 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                 [view.group openGroupNamed:@"signal_channels" error:error];
             if (!viewSig) { [view discard]; return NO; }
             for (NSString *ch in channels) {
+                // The tags go straight into the block run, never into
+                // the view as a codec-0 dataset.
+                if ([ch isEqualToString:@"tags"]) continue;
                 NSData *raw = decrypted[ch];
                 id<TTIOStorageDataset> ds =
                     [viewSig createDatasetNamed:ch
@@ -1170,6 +1251,7 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                 rd, runGroup, study, table, b, 0, &seq, &qual, error);
             [view discard];
             if (!block) return NO;
+            if (decrypted[@"tags"] != nil) block.tags = decrypted[@"tags"];
             if (refMD5 == nil && block.referenceChromSeqs != nil) {
                 refMD5 = [TTIOSpectralDataset referenceMD5ForRun:block];
             }
@@ -1195,6 +1277,11 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                 [newLen[ch] addObject:@((unsigned long long)got.length)];
                 [newCodec[ch] addObject:blobs.codecs[ch] ?: @0];
                 id<TTIOStorageDataset> ds = newDs[ch];
+                // Like the stream writer, a channel dataset is created at
+                // its first non-empty blob, so it takes that blob's codec
+                // and filter (a tags channel may start after untagged
+                // blocks). Empty blocks still record their range above.
+                if (ds == nil && got.length == 0) continue;
                 if (ds == nil) {
                     id<TTIOStorageGroup> parent;
                     NSString *dsName;
@@ -1441,6 +1528,17 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                 }
                 id<TTIOStorageGroup> gSig =
                     [gRun openGroupNamed:@"signal_channels" error:error];
+                if (gSig && [gSig hasChildNamed:@"tags"]) {
+                    // M101: tags are encrypted with the bases; only the
+                    // blocks_v1 walker carries them, and leaving them in
+                    // plaintext would expose MD strings.
+                    if (error) *error = makeErr(6,
+                        @"per-AU encryption: genomic run '%@' uses the "
+                        @"whole-channel layout and carries SAM tags; per-AU "
+                        @"protection of tags needs the blocks_v1 layout. Rewrite "
+                        @"the run without opt_legacy_whole_channel.", gRunName);
+                    return NO;
+                }
                 id<TTIOStorageGroup> gIdx =
                     [gRun openGroupNamed:@"genomic_index" error:error];
                 if (!gSig || !gIdx) return NO;
@@ -1702,7 +1800,7 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                     [hdf5GRun openGroupNamed:@"signal_channels" error:NULL];
 
                 NSMutableDictionary *gRunOut = [NSMutableDictionary dictionary];
-                for (NSString *cname in @[@"sequences", @"qualities"]) {
+                for (NSString *cname in kBlocksV1Channels()) {
                     NSString *segName =
                         [NSString stringWithFormat:@"%@_segments", cname];
                     if (![gSig hasChildNamed:segName]) continue;
@@ -1717,7 +1815,14 @@ static BOOL ttioDecryptBlocksV1RunInPlace(id<TTIOStorageGroup> study,
                                                 key:key
                                               error:error];
                     if (!plain) return nil;
-                    gRunOut[cname] = plain;
+                    if ([cname isEqualToString:@"tags"]) {
+                        // M101: tags come back as one string per read.
+                        NSArray *texts = ttioSplitTagTexts(plain, segs, error);
+                        if (!texts) return nil;
+                        gRunOut[cname] = texts;
+                    } else {
+                        gRunOut[cname] = plain;
+                    }
                 }
                 out[gRunName] = gRunOut;
                 datasetId++;
@@ -2137,6 +2242,15 @@ static BOOL _writePlainDataset(id<TTIOStorageGroup> group, NSString *name,
             if (!gRun) continue;
             id<TTIOStorageGroup> gSig =
                 [gRun openGroupNamed:@"signal_channels" error:error];
+            if (gSig && [gSig hasChildNamed:@"tags"]) {
+                // M101: region keys do not cover the SAM tags; refuse
+                // rather than leave MD strings in plaintext.
+                if (error) *error = makeErr(6,
+                    @"per-AU region encryption: genomic run '%@' carries "
+                    @"SAM tags, which region keys do not protect; use encrypt_per_au",
+                    gRunName);
+                return NO;
+            }
             id<TTIOStorageGroup> gIdx =
                 [gRun openGroupNamed:@"genomic_index" error:error];
             if (!gSig || !gIdx) return NO;

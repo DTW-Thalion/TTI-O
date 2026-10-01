@@ -120,6 +120,14 @@
     return _offsetsData.length / sizeof(uint64_t);
 }
 
+- (BOOL)hasTags
+{
+    for (NSString *t in _tags) {
+        if (t.length > 0) return YES;
+    }
+    return NO;
+}
+
 - (instancetype)copyWithSignalCodecOverrides:(NSDictionary<NSString *, NSNumber *> *)overrides
 {
     TTIOWrittenGenomicRun *c = [[[self class] alloc]
@@ -151,6 +159,7 @@
     c.optLegacyWholeChannel = _optLegacyWholeChannel;
     c.readRole = _readRole;
     c.refDiffSliceBytes = _refDiffSliceBytes;
+    c.tags = _tags;
     return c;
 }
 

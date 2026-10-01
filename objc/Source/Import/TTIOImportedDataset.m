@@ -92,6 +92,30 @@
                 ok = NO; return NO;
             }
         }
+        // M101: opt_sam_tags once a streamed genomic run turned out to
+        // carry SAM tags; the static write could not know.
+        if (gNames.count > 0 && [root respondsToSelector:@selector(unwrap)]) {
+            TTIOHDF5Group *h5root = [(id)root performSelector:@selector(unwrap)];
+            id<TTIOStorageGroup> runs = [study hasChildNamed:@"genomic_runs"]
+                ? [study openGroupNamed:@"genomic_runs" error:NULL] : nil;
+            BOOL anyTags = NO;
+            for (NSString *key in gNames) {
+                NSString *runName = self.genomicStreams[key].name ?: key;
+                if (![runs hasChildNamed:runName]) continue;
+                id<TTIOStorageGroup> sc = [[runs openGroupNamed:runName error:NULL]
+                                           openGroupNamed:@"signal_channels" error:NULL];
+                if ([sc hasChildNamed:@"tags"]) { anyTags = YES; break; }
+            }
+            NSString *flag = [TTIOFeatureFlags featureOptSamTags];
+            if (anyTags && h5root && ![TTIOFeatureFlags root:h5root supportsFeature:flag]) {
+                NSMutableArray *features =
+                    [[TTIOFeatureFlags featuresForRoot:h5root] mutableCopy] ?: [NSMutableArray array];
+                [features addObject:flag];
+                NSString *version = [TTIOFeatureFlags formatVersionForRoot:h5root];
+                if (![TTIOFeatureFlags writeFormatVersion:version features:features
+                                                    toRoot:h5root error:error]) { ok = NO; return NO; }
+            }
+        }
         NSArray *sNames = [[self.spectralStreams allKeys] sortedArrayUsingSelector:@selector(compare:)];
         for (NSString *name in sNames) {
             if ([self.spectralStreams[name] writeIntoStudy:study progress:progress error:error] == NSNotFound) {

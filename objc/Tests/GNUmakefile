@@ -96,6 +96,7 @@ TTIOTests_OBJC_FILES = \
 	TestM97LongReadProfile.m \
 	TestM98AssemblyGraph.m \
 	TestM99BlocksV1PerAU.m \
+	TestM101SamTags.m \
 	TestNameTokenizerV2.m \
 	TestNameTokenizedV2Dispatch.m \
 	TestOffsetsCumsum.m \

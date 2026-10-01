@@ -114,6 +114,9 @@ static NSUInteger TTIOReadAheadBlocks(void)
     // (Gotcha §138 — re-opening the file incurs the decode cost
     // again).
     NSArray<NSString *> *_decodedCigars;
+    // M101: decoded SAM_TAGS channel, one string per read; @[] when
+    // the run has no tags channel. nil until first access.
+    NSArray<NSString *> *_decodedTags;
     // lazy whole-channel decode cache for integer
     // channels (positions / flags / mapping_qualities) whose
     // @compression attribute names a TTIO rANS id. Held as NSData
@@ -252,11 +255,16 @@ static NSUInteger TTIOReadAheadBlocks(void)
 - (TTIOReferenceResolver *)_resolverForViews
 {
     if (_injectedResolver != nil) return _injectedResolver;
-    if (!_viewResolverBuilt) {
-        _viewResolverBuilt = YES;
-        _viewResolver = [self _resolverFromOwningFile];
+    // Block-decode workers call this concurrently: without the lock a
+    // second caller could see the built flag before the resolver is
+    // assigned and decode a REF_DIFF view with no resolver.
+    @synchronized (self) {
+        if (!_viewResolverBuilt) {
+            _viewResolver = [self _resolverFromOwningFile];
+            _viewResolverBuilt = YES;
+        }
+        return _viewResolver;
     }
-    return _viewResolver;
 }
 
 /* Built exactly as the REF_DIFF_V2 decode path builds it from the run
@@ -993,8 +1001,139 @@ static uint8_t _ttio_m86_read_compression_attr_protocol(id<TTIOStorageDataset> d
             externalReferencePath:nil];
     }
 
+    // SAM_TAGS (M101): the references for MD/NM derivation, indexed
+    // like ownChromIds; resolved once per decode and only for
+    // REF_DIFF_V2 runs. nil = the reference could not be resolved.
+    NSDictionary<NSString *, NSNumber *> *tagNameToId = [nameToId copy];
+    ctx.tagReferencesProvider = ^NSArray * _Nullable {
+        TTIOGenomicRun *s = weakSelf;
+        return s ? [s _tagReferencesForNameToId:tagNameToId] : @[];
+    };
+
     _codecCtxCache = ctx;
     return _codecCtxCache;
+}
+
+/* References for SAM_TAGS MD/NM derivation, indexed like ownChromIds.
+ * The writer derives only on REF_DIFF_V2 runs (binding decision 96),
+ * whose one chromosome resolves the same way the sequences decode
+ * does (the refdiff_v2 blob header's uri and md5); any other run gets
+ * none. nil when the reference cannot be resolved. */
+- (NSArray *)_tagReferencesForNameToId:(NSDictionary<NSString *, NSNumber *> *)nameToId
+{
+    if (![self _sequencesIsRefDiffV2]) return @[];
+    NSMutableSet<NSString *> *unique = [NSMutableSet set];
+    NSUInteger n = [self index].count;
+    for (NSUInteger i = 0; i < n; i++) {
+        NSString *c = [[self index] chromosomeAt:i];
+        if (c.length > 0 && ![c isEqualToString:@"*"]) [unique addObject:c];
+    }
+    NSMutableArray *refs = [NSMutableArray arrayWithCapacity:nameToId.count];
+    for (NSUInteger j = 0; j < nameToId.count; j++) [refs addObject:[NSNull null]];
+    if (unique.count != 1) return refs;
+    NSString *chrom = [unique anyObject];
+    NSNumber *cid = nameToId[chrom];
+    if (cid == nil || cid.unsignedIntegerValue >= refs.count) return refs;
+
+    // The outer header is 38 bytes plus a uint16-length URI:
+    // [0:4] "RDF2", [20:36] md5, [36:38] uri_len LE, [38:] uri.
+    id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
+    id<TTIOStorageGroup> seqGrp = [sig openGroupNamed:@"sequences" error:NULL];
+    id<TTIOStorageDataset> ds = [seqGrp openDatasetNamed:@"refdiff_v2" error:NULL];
+    if (!ds) return nil;
+    NSUInteger want = MIN(ds.length, (NSUInteger)(38 + 0xFFFF));
+    id raw = [ds readSliceAtOffset:0 count:want error:NULL];
+    if (![raw isKindOfClass:[NSData class]] || [(NSData *)raw length] < 38) return nil;
+    const uint8_t *hb = (const uint8_t *)[(NSData *)raw bytes];
+    if (memcmp(hb, "RDF2", 4) != 0) return nil;
+    uint16_t uriLen = (uint16_t)(hb[36] | (hb[37] << 8));
+    if ([(NSData *)raw length] < (NSUInteger)(38 + uriLen)) return nil;
+    NSString *uri = [[NSString alloc] initWithBytes:hb + 38 length:uriLen
+                                           encoding:NSUTF8StringEncoding] ?: @"";
+    NSData *md5 = [NSData dataWithBytes:hb + 20 length:16];
+    TTIOReferenceResolver *resolver = [self _codecContext].referenceResolver;
+    if (resolver == nil) return nil;
+    NSData *ref = [resolver resolveURI:uri expectedMD5:md5 chromosome:chrom error:NULL];
+    if (ref == nil) return nil;
+    refs[cid.unsignedIntegerValue] = ref;
+    return refs;
+}
+
+- (BOOL)hasTagsChannel
+{
+    id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
+    return sig != nil && [sig hasChildNamed:@"tags"];
+}
+
+- (NSArray<NSString *> *)allTagsWithError:(NSError **)error
+{
+    if (_decodedTags != nil) return _decodedTags;
+    if (![self hasTagsChannel]) {
+        _decodedTags = @[];
+        return _decodedTags;
+    }
+    if (_blockTable) {
+        // Not cached: the per-block views hold their own decode.
+        NSMutableArray<NSString *> *all =
+            [NSMutableArray arrayWithCapacity:(NSUInteger)_blockTable.readCount];
+        for (NSUInteger b = 0; b < _blockTable.count; b++) {
+            TTIOGenomicRun *view = [self _blockView:b error:error];
+            if (!view) return nil;
+            NSArray<NSString *> *part = [view allTagsWithError:error];
+            if (!part) return nil;
+            if (part.count == 0) {
+                for (NSUInteger j = 0; j < [view readCount]; j++) [all addObject:@""];
+            } else {
+                [all addObjectsFromArray:part];
+            }
+        }
+        return all;
+    }
+    id<TTIOStorageDataset> ds = [self signalDatasetNamed:@"tags" error:error];
+    if (!ds) return nil;
+    uint8_t codec_id = 0;
+    id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
+    if ([sig respondsToSelector:@selector(unwrap)]) {
+        TTIOHDF5Group *hg = [(id)sig performSelector:@selector(unwrap)];
+        TTIOHDF5Dataset *hds = [hg openDatasetNamed:@"tags" error:NULL];
+        if (hds) codec_id = _ttio_m86_read_compression_attr([hds datasetId]);
+    } else {
+        codec_id = _ttio_m86_read_compression_attr_protocol(ds);
+    }
+    if (codec_id != TTIOCompressionSamTags) {
+        if (error) *error = [NSError errorWithDomain:@"TTIOGenomicRun" code:2020
+            userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                @"signal_channel 'tags': @compression=%u is not SAM_TAGS (18), "
+                @"the only codec of the tags channel", (unsigned)codec_id]}];
+        return nil;
+    }
+    id raw = [ds readAll:error];
+    if (![raw isKindOfClass:[NSData class]]) return nil;
+    TTIOCodecContext *ctx = [self _codecContext];
+    NSArray *refs = ctx.tagReferencesProvider ? ctx.tagReferencesProvider() : @[];
+    if (refs == nil) {
+        if (error) *error = [NSError errorWithDomain:@"TTIOGenomicRun" code:2021
+            userInfo:@{NSLocalizedDescriptionKey:
+                @"signal_channel 'tags': the reference for MD/NM derivation "
+                @"could not be resolved"}];
+        return nil;
+    }
+    // Resolve once: hand the codec a context whose provider returns the
+    // references already in hand.
+    TTIOCodecContext *tagCtx = [TTIOCodecContext emptyContext];
+    tagCtx.readCount = ctx.readCount;
+    tagCtx.readLengths = ctx.readLengths;
+    tagCtx.sequencesProvider = ctx.sequencesProvider;
+    tagCtx.cigarsProvider = ctx.cigarsProvider;
+    tagCtx.positions = ctx.positions;
+    tagCtx.ownChromIds = ctx.ownChromIds;
+    tagCtx.tagReferencesProvider = ^NSArray * _Nullable { return refs; };
+    id<TTIOCodec> codec = [TTIOCodecRegistry codecForId:TTIOCompressionSamTags];
+    TTIODecodedChannel *dc = [codec decode:[[TTIOBytesPayload alloc] initWithBytes:raw]
+                                   context:tagCtx error:error];
+    if (dc == nil) return nil;
+    _decodedTags = ((TTIODecodedStringList *)dc).names;
+    return _decodedTags;
 }
 
 // byte-channel slice helper.
@@ -1998,6 +2137,10 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
     int64_t matePosition = [self _matePosAtIndex:i error:&mErr];
     int32_t templateLength = [self _mateTlenAtIndex:i error:&mErr];
 
+    // M101: the SAM optional fields, decoded once per run / block view.
+    NSArray<NSString *> *tags = [self allTagsWithError:error];
+    if (!tags) return nil;
+
     return [[TTIOAlignedRead alloc]
         initWithReadName:readName
               chromosome:chrom
@@ -2009,7 +2152,8 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
                    flags:flag
           mateChromosome:mateChromosome
             matePosition:matePosition
-          templateLength:templateLength];
+          templateLength:templateLength
+                    tags:(i < tags.count ? tags[i] : @"")];
 }
 
 - (NSArray<TTIOAlignedRead *> *)readsInRegion:(NSString *)chromosome

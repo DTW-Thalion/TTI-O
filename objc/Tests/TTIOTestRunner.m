@@ -108,6 +108,7 @@ extern void testRefDiffV2Dispatch(void);
 extern void testM97LongReadProfile(void);
 extern void testM98AssemblyGraph(void);
 extern void testM99BlocksV1PerAU(void);
+extern void testM101SamTags(void);
 extern void testNameTokenizerV2(void);
 extern void testNameTokenizedV2Dispatch(void);
 extern void testOffsetsCumsum(void);
@@ -593,6 +594,10 @@ int main(int argc, const char *argv[])
         START_SET("M99: blocks_v1 per-AU streaming walkers")
             testM99BlocksV1PerAU();
         END_SET("M99: blocks_v1 per-AU streaming walkers")
+
+        START_SET("M101: SAM optional tags")
+            testM101SamTags();
+        END_SET("M101: SAM optional tags")
 
         START_SET("name_tok v2 codec round-trip + invalid-input")
             testNameTokenizerV2();

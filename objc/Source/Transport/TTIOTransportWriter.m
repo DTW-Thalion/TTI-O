@@ -1358,6 +1358,10 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
     NSArray<NSString *> *channelNames = @[@"sequences", @"qualities",
                                             @"cigar", @"read_name",
                                             @"mate_chromosome"];
+    // M101: a run carrying SAM tags adds a UTF-8 "tags" channel
+    // (transport-spec 4.3.1); a tag-less run's stream is unchanged.
+    BOOL hasTags = [run hasTagsChannel];
+    if (hasTags) channelNames = [channelNames arrayByAddingObject:@"tags"];
     if (![self writeDatasetHeaderWithDatasetId:datasetId
                                            name:(name ?: @"")
                                 acquisitionMode:(uint8_t)run.acquisitionMode
@@ -1428,6 +1432,15 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                                 compression:TTIOCompressionNone
                                                   nElements:(uint32_t)mateChrData.length
                                                        data:mateChrData];
+        NSMutableArray *auChannels = [@[seqCh, qualCh, cigarCh, nameCh, mateChrCh] mutableCopy];
+        if (hasTags) {
+            NSData *tagData = [(r.tags ?: @"") dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+            [auChannels addObject:[[TTIOTransportChannelData alloc] initWithName:@"tags"
+                                                                       precision:TTIOPrecisionUInt8
+                                                                     compression:TTIOCompressionNone
+                                                                       nElements:(uint32_t)tagData.length
+                                                                            data:tagData]];
+        }
         // Prefer the index-side fields for chromosome/position/mapq/
         // flags — they're already in the wire-correct types and avoid
         // any sentinel conversion in AlignedRead. Falls back to the
@@ -1452,7 +1465,7 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                           precursorCharge:0
                                               ionMobility:0.0
                                         basePeakIntensity:0.0
-                                                 channels:@[seqCh, qualCh, cigarCh, nameCh, mateChrCh]
+                                                 channels:auChannels
                                                    pixelX:0 pixelY:0 pixelZ:0
                                                chromosome:(chrom ?: @"")
                                                  position:pos
@@ -1651,11 +1664,14 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
     for (NSString *name in genomicNames) {
         TTIOGenomicRun *grun = dataset.genomicRuns[name];
         NSString *instrJSON = genomicRunMetadataJSON(grun);
+        // M101: "tags" only for runs that carry the tags channel.
+        NSArray<NSString *> *runChannelNames = [grun hasTagsChannel]
+            ? [gChannelNames arrayByAddingObject:@"tags"] : gChannelNames;
         if (![self writeDatasetHeaderWithDatasetId:did
                                                name:name
                                     acquisitionMode:(uint8_t)grun.acquisitionMode
                                       spectrumClass:@"TTIOGenomicRead"
-                                       channelNames:gChannelNames
+                                       channelNames:runChannelNames
                                      instrumentJSON:instrJSON
                                    expectedAUCount:(uint32_t)grun.readCount
                                               error:error]) return NO;
@@ -1747,6 +1763,7 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
         NSData *qualAll = (nReads > 0)
             ? [grun wholeQualitiesData] : [NSData data];
         NSArray<NSString *> *namesAll = [grun allReadNames];
+        BOOL gHasTags = [grun hasTagsChannel];
         const uint8_t *seqBytes  = seqAll.bytes;
         const uint8_t *qualBytes = qualAll.bytes;
         NSUInteger qualLenTotal = qualAll.length;
@@ -1812,6 +1829,15 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                                     compression:TTIOCompressionNone
                                                       nElements:(uint32_t)mateChrData.length
                                                            data:mateChrData];
+            NSMutableArray *auChannels = [@[seqCh, qualCh, cigarCh, nameCh, mateChrCh] mutableCopy];
+            if (gHasTags) {
+                NSData *tagData = [(r.tags ?: @"") dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+                [auChannels addObject:[[TTIOTransportChannelData alloc] initWithName:@"tags"
+                                                                           precision:TTIOPrecisionUInt8
+                                                                         compression:TTIOCompressionNone
+                                                                           nElements:(uint32_t)tagData.length
+                                                                                data:tagData]];
+            }
             NSString *chrom = r.chromosome;
             int64_t pos = r.position;
             uint8_t mapq = r.mappingQuality;
@@ -1832,7 +1858,7 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                               precursorCharge:0
                                                   ionMobility:0.0
                                             basePeakIntensity:0.0
-                                                     channels:@[seqCh, qualCh, cigarCh, nameCh, mateChrCh]
+                                                     channels:auChannels
                                                        pixelX:0 pixelY:0 pixelZ:0
                                                    chromosome:(chrom ?: @"")
                                                      position:pos

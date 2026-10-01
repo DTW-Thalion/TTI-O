@@ -152,6 +152,9 @@ static NSString *rsSortedNames(NSDictionary *runs)
     NSMutableArray<NSString *> *readNames      = [NSMutableArray arrayWithCapacity:n];
     NSMutableArray<NSString *> *cigars         = [NSMutableArray arrayWithCapacity:n];
     NSMutableArray<NSString *> *mateChromosomes = [NSMutableArray arrayWithCapacity:n];
+    // M101: the SAM optional fields, carried when the run stores them.
+    BOOL hasTags = [readSideRun hasTagsChannel];
+    NSMutableArray<NSString *> *tags = hasTags ? [NSMutableArray arrayWithCapacity:n] : nil;
 
     NSMutableData *sequences = [NSMutableData data];
     NSMutableData *qualities = [NSMutableData data];
@@ -179,6 +182,7 @@ static NSString *rsSortedNames(NSDictionary *runs)
         [readNames addObject:(read.readName ?: @"")];
         [cigars addObject:(read.cigar ?: @"*")];
         [mateChromosomes addObject:(read.mateChromosome ?: @"*")];
+        [tags addObject:(read.tags ?: @"")];
         mposPtr[i] = read.matePosition;
         tlenPtr[i] = read.templateLength;
     }
@@ -186,7 +190,7 @@ static NSString *rsSortedNames(NSDictionary *runs)
     TTIOAcquisitionMode mode = readSideRun.acquisitionMode;
     if (mode == 0) mode = TTIOAcquisitionModeGenomicWGS;
 
-    return [[TTIOWrittenGenomicRun alloc]
+    TTIOWrittenGenomicRun *w = [[TTIOWrittenGenomicRun alloc]
         initWithAcquisitionMode:mode
                    referenceUri:(readSideRun.referenceUri ?: @"")
                        platform:(readSideRun.platform ?: @"")
@@ -205,6 +209,8 @@ static NSString *rsSortedNames(NSDictionary *runs)
                 templateLengths:tlens
                     chromosomes:chromosomes
               signalCompression:TTIOCompressionNone];
+    w.tags = tags;
+    return w;
 }
 
 @end

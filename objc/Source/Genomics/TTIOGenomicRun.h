@@ -338,6 +338,22 @@
  */
 - (NSArray<NSString *> *)allReadNames;
 
+// ── M101 SAM optional fields ─────────────────────────────────────
+
+/** YES when the run carries the SAM tags channel
+ *  (<code>signal_channels/tags</code>, codec SAM_TAGS) in either
+ *  layout. */
+- (BOOL)hasTagsChannel;
+
+/**
+ * Every read's SAM tag text (columns 12+, tab-joined), decoded once
+ * and cached; <code>@[]</code> when the run has no tags channel.
+ *
+ * @param error Out-parameter populated on decode failure.
+ * @return One string per read, <code>@[]</code>, or nil on failure.
+ */
+- (NSArray<NSString *> *)allTagsWithError:(NSError **)error;
+
 @end
 
 #endif

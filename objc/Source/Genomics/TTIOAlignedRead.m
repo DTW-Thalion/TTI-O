@@ -30,6 +30,33 @@
                     matePosition:(int64_t)matePosition
                   templateLength:(int32_t)templateLength
 {
+    return [self initWithReadName:readName
+                       chromosome:chromosome
+                         position:position
+                   mappingQuality:mappingQuality
+                            cigar:cigar
+                         sequence:sequence
+                        qualities:qualities
+                            flags:flags
+                   mateChromosome:mateChromosome
+                     matePosition:matePosition
+                   templateLength:templateLength
+                             tags:@""];
+}
+
+- (instancetype)initWithReadName:(NSString *)readName
+                      chromosome:(NSString *)chromosome
+                        position:(int64_t)position
+                  mappingQuality:(uint8_t)mappingQuality
+                           cigar:(NSString *)cigar
+                        sequence:(NSString *)sequence
+                       qualities:(NSData *)qualities
+                           flags:(uint32_t)flags
+                  mateChromosome:(NSString *)mateChromosome
+                    matePosition:(int64_t)matePosition
+                  templateLength:(int32_t)templateLength
+                            tags:(NSString *)tags
+{
     self = [super init];
     if (self) {
         _readName        = [readName copy];
@@ -43,6 +70,7 @@
         _mateChromosome  = [mateChromosome copy];
         _matePosition    = matePosition;
         _templateLength  = templateLength;
+        _tags            = tags ? [tags copy] : @"";
     }
     return self;
 }
@@ -67,7 +95,8 @@
         && _flags == o.flags
         && [_mateChromosome isEqualToString:o.mateChromosome]
         && _matePosition == o.matePosition
-        && _templateLength == o.templateLength;
+        && _templateLength == o.templateLength
+        && [_tags isEqualToString:o.tags];
 }
 
 - (NSUInteger)hash

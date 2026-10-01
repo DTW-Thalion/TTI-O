@@ -173,6 +173,17 @@ static TTIOAccessUnit *accessUnitFromGenomicRead(TTIOGenomicRun *run,
                                             compression:TTIOCompressionNone
                                               nElements:(uint32_t)mateChrData.length
                                                    data:mateChrData];
+    // M101: a run carrying SAM tags adds a UTF-8 "tags" channel.
+    NSMutableArray *auChannels = [@[seqCh, qualCh, cigarCh, nameCh, mateChrCh] mutableCopy];
+    if ([run hasTagsChannel]) {
+        NSData *tagData =
+            [(r.tags ?: @"") dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+        [auChannels addObject:[[TTIOTransportChannelData alloc] initWithName:@"tags"
+                                                                   precision:TTIOPrecisionUInt8
+                                                                 compression:TTIOCompressionNone
+                                                                   nElements:(uint32_t)tagData.length
+                                                                        data:tagData]];
+    }
     // Mirror the writer: prefer the genomic index for chromosome /
     // position / mappingQuality / flags when available; otherwise fall
     // back to the AlignedRead fields.
@@ -197,7 +208,7 @@ static TTIOAccessUnit *accessUnitFromGenomicRead(TTIOGenomicRun *run,
               precursorCharge:0
                   ionMobility:0.0
             basePeakIntensity:0.0
-                     channels:@[seqCh, qualCh, cigarCh, nameCh, mateChrCh]
+                     channels:auChannels
                        pixelX:0 pixelY:0 pixelZ:0
                    chromosome:(chrom ?: @"")
                      position:pos
@@ -417,7 +428,9 @@ visitDatasetHeaderWithDatasetId:did
                                   name:name
                        acquisitionMode:(uint8_t)grun.acquisitionMode
                          spectrumClass:@"TTIOGenomicRead"
-                          channelNames:gChannelNames
+                          channelNames:([grun hasTagsChannel]
+                                            ? [gChannelNames arrayByAddingObject:@"tags"]
+                                            : gChannelNames)
                         instrumentJSON:genomicRunMetadataJSON(grun)
                       expectedAUCount:(uint32_t)grun.readCount];
         }

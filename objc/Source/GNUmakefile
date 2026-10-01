@@ -189,6 +189,7 @@ libTTIO_OBJC_FILES = \
 	HDF5/TTIOFeatureFlags.m \
 	Core/TTIOSignalArray.m \
 	Core/TTIOThreads.m \
+	Core/TTIOExitOrder.m \
 	Core/TTIONumpress.m \
 	Core/TTIOProgressSink.m \
 	Spectra/TTIOSpectrum.m \

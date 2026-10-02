@@ -82,29 +82,38 @@ section must hold exactly `n_runs` runs and end at `exc_len`.
 The writer chooses `table_bits`; the decoder only reads it. With
 `table_bits` 0 at the API, the reference encoder takes
 `ceil(log2(n_bases)) + 1`, clamped to 16 to 24. The model holds
-`12 << table_bits` bytes per order whose context does not fit the table
-directly (§3.1), on encode and on decode.
+`16 << table_bits` bytes per hashed order (§3.1), on encode and on
+decode.
 
 ## 3. Model
 
 ### 3.1 Counters and contexts
 
-For every order `k` there is a table of `3 << b` counters, where
-`b = 2k` if `2k <= table_bits` (the context indexes the table directly)
-and `b = table_bits` otherwise (the context is hashed).
-
 The context of a base is `h`, the previous bases of the same read as
 2-bit codes (`A`=0, `C`=1, `G`=2, `T`=3), most recent in the low bits.
-`h` is 0 at the start of every read and after every exception byte. For
-order `k` the table row is
+`h` is 0 at the start of every read and after every exception byte.
 
-- direct: `h & (4^k - 1)`;
-- hashed: `((h & (4^k - 1)) * 0x9E3779B97F4A7C15) >> (64 - table_bits)`,
-  64-bit unsigned multiply, keeping the low 64 bits before the shift.
+Every order `k` has a table of **buckets** of 16 counters. A bucket is
+chosen by the context's older `k - 1` bases,
+`key = (h >> 2) & (4^(k-1) - 1)`, and holds the four contexts that differ
+only in the newest base `h & 3`: that context's three counters sit at
+`bucket * 16 + (h & 3) * 4`, and the fourth slot of each group is unused.
+The bucket index is
+
+- direct, when `2k <= table_bits`: `key` (the table has `4^(k-1)`
+  buckets);
+- hashed otherwise: `(key * 0x9E3779B97F4A7C15) >> (64 - (table_bits - 2))`,
+  a 64-bit unsigned multiply keeping the low 64 bits (the table has
+  `2^(table_bits - 2)` buckets).
+
+A table of `table_bits` holds `16 << table_bits` bytes. Because the next
+base's bucket depends only on bases already known, a coder can fetch it
+while the current base is coded; the layout is part of the format only
+through which counters contexts share.
 
 A base `c` is coded as two binary decisions: `hi = c >> 1` at node 0,
-then `lo = c & 1` at node `1 + hi`. Counter `row * 3 + node` predicts
-each decision.
+then `lo = c & 1` at node `1 + hi`, each predicted by the context's
+counter for that node.
 
 A counter holds a probability `p` (of the bit being 1, in 1/65536, start
 32768) and a count `n` (start 0). After the bit is known, with
@@ -188,4 +197,4 @@ read as 0.
 - The writer's block size and the codec's per-block model: blocks_v1
   codes each block on its own, so the model restarts every block. The
   cost is being measured before the writer's policy is fixed.
-- Throughput (about 2.5 MB/s per core in the reference kernel).
+- Throughput (about 4 MB/s per core in the reference kernel).

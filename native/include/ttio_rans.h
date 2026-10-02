@@ -587,8 +587,8 @@ void ttio_sam_tags_free(void *p);
  * Decode takes the same lengths. Bytes other than A/C/G/T (N, IUPAC,
  * lower case) round-trip as exception runs. params == NULL takes the
  * defaults of ttio_seq_cm_default_params; table_bits == 0 lets the
- * encoder choose from the base count. The model holds 12 << table_bits
- * bytes per long order, on encode and on decode.
+ * encoder choose from the base count. The model holds 16 << table_bits
+ * bytes per hashed order, on encode and on decode.
  *
  * Returns 0 on success; TTIO_RANS_ERR_PARAM on bad input (lengths that
  * do not match the blob included), TTIO_RANS_ERR_ALLOC, or

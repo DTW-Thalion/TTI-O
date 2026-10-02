@@ -194,13 +194,20 @@ static inline int bac_decode(bac_dec *d, uint32_t p16)
 
 /* A counter is one uint32: probability P(bit = 1) in the high 16 bits,
  * stored XOR 0x8000 so that a zeroed table means p = 1/2, and the
- * observation count in the low 16 bits. */
+ * observation count in the low 16 bits.
+ *
+ * Tables are arrays of 64-byte buckets (spec §3.1). A bucket is chosen by
+ * the context's older k - 1 bases and holds the four contexts that differ
+ * only in the newest base, three counters each (the fourth slot unused).
+ * The bucket of the next base is known before the current base is coded,
+ * so it can be prefetched. */
 typedef struct {
     int k;
-    int bits;
+    int bbits;              /* bucket index bits */
     int direct;
-    uint64_t mask;
-    uint32_t *t;            /* [1 << bits][3] */
+    uint64_t pmask;         /* 2(k - 1) bits: the bucket key */
+    uint32_t *t;            /* [1 << bbits][16], 64-byte aligned */
+    void *raw;
 } order_t;
 
 typedef struct {
@@ -219,7 +226,7 @@ typedef struct {
 
 static void model_free(model_t *m)
 {
-    for (int i = 0; i < m->n_orders; i++) free(m->o[i].t);
+    for (int i = 0; i < m->n_orders; i++) free(m->o[i].raw);
     free(m->rate_tab);
 }
 
@@ -237,11 +244,12 @@ static int model_init(model_t *m, int n_orders, const uint8_t *orders,
     for (int i = 0; i < n_orders; i++) {
         order_t *o = &m->o[i];
         o->k = orders[i];
-        o->mask = o->k >= 32 ? ~(uint64_t)0 : (((uint64_t)1 << (2 * o->k)) - 1);
+        o->pmask = ((uint64_t)1 << (2 * (o->k - 1))) - 1;
         o->direct = 2 * o->k <= table_bits;
-        o->bits = o->direct ? 2 * o->k : table_bits;
-        o->t = (uint32_t *)calloc((size_t)3 << o->bits, sizeof(uint32_t));
-        if (!o->t) { m->n_orders = i; model_free(m); return TTIO_RANS_ERR_ALLOC; }
+        o->bbits = o->direct ? 2 * (o->k - 1) : table_bits - 2;
+        o->raw = calloc(((size_t)16 << o->bbits) + 16, sizeof(uint32_t));
+        if (!o->raw) { m->n_orders = i; model_free(m); return TTIO_RANS_ERR_ALLOC; }
+        o->t = (uint32_t *)(((uintptr_t)o->raw + 63) & ~(uintptr_t)63);
     }
     m->n_orders = n_orders;
     for (int s = 0; s < SQC_MIX_SETS; s++)
@@ -250,11 +258,31 @@ static int model_init(model_t *m, int n_orders, const uint8_t *orders,
     return 0;
 }
 
+static inline uint64_t bucket_of(const order_t *o, uint64_t key)
+{
+    if (o->direct) return key;
+    return (key * 0x9E3779B97F4A7C15ull) >> (64 - o->bbits);
+}
+
+/* First counter of the context ending with the newest base in hist. */
 static inline uint64_t ctx_row(const order_t *o, uint64_t hist)
 {
-    uint64_t h = hist & o->mask;
-    if (o->direct) return h;
-    return (h * 0x9E3779B97F4A7C15ull) >> (64 - o->bits);
+    return (bucket_of(o, (hist >> 2) & o->pmask) << 4) | ((hist & 3) << 2);
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+#define SQC_PREFETCH(p) __builtin_prefetch(p, 1, 3)
+#else
+#define SQC_PREFETCH(p) ((void)(p))
+#endif
+
+/* Prefetch the buckets the base after the one at hist will use. */
+static inline void prefetch_next(const model_t *m, uint64_t hist)
+{
+    for (int i = 0; i < m->n_orders; i++) {
+        const order_t *o = &m->o[i];
+        SQC_PREFETCH(o->t + (bucket_of(o, hist & o->pmask) << 4));
+    }
 }
 
 /* Predict one decision: fills the scratch and returns p16 for the coder. */
@@ -263,7 +291,7 @@ static inline uint32_t model_predict(model_t *m, const uint64_t *rows, int node)
     uint32_t conf = 0;
     int64_t dot = 0;
     for (int i = 0; i < m->n_orders; i++) {
-        uint32_t *c = &m->o[i].t[rows[i] * 3 + (uint64_t)node];
+        uint32_t *c = &m->o[i].t[rows[i] + (uint64_t)node];
         m->slot[i] = c;
         uint32_t p = (*c >> 16) ^ 0x8000u;
         uint32_t n = *c & 0xFFFFu;
@@ -309,6 +337,7 @@ static inline void model_train_base(model_t *m, uint64_t hist, int base)
 {
     uint64_t rows[SQC_MAX_ORDERS];
     rows_of(m, hist, rows);
+    prefetch_next(m, hist);
     int hi = (base >> 1) & 1, lo = base & 1;
     model_predict(m, rows, 0);
     model_update(m, hi);
@@ -431,6 +460,7 @@ int ttio_seq_cm_encode(const uint8_t *seq, const uint64_t *lengths,
             if (c < 0) { hist = 0; continue; }
             int hi = (c >> 1) & 1, lo = c & 1;
             rows_of(&m, hist, rows);
+            prefetch_next(&m, hist);
             bac_encode(&e, hi, model_predict(&m, rows, 0));
             model_update(&m, hi);
             bac_encode(&e, lo, model_predict(&m, rows, 1 + hi));
@@ -543,6 +573,7 @@ int ttio_seq_cm_decode(const uint8_t *in, size_t in_len,
                 continue;
             }
             rows_of(&m, hist, rows);
+            prefetch_next(&m, hist);
             int hi = bac_decode(&d, model_predict(&m, rows, 0));
             model_update(&m, hi);
             int lo = bac_decode(&d, model_predict(&m, rows, 1 + hi));

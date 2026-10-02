@@ -1004,6 +1004,10 @@ class SpectralDataset:
         )
         if features is None and any_m74:
             feature_list = feature_list + ["opt_ms2_activation_detail"]
+        # M102: opt_pixel_coordinates when any run carries pixel columns.
+        if (any(run.pixel_x is not None for run in runs.values())
+                and "opt_pixel_coordinates" not in feature_list):
+            feature_list = feature_list + ["opt_pixel_coordinates"]
         has_genomic = bool(genomic_runs)
         if has_genomic and "opt_genomic" not in feature_list:
             feature_list = feature_list + ["opt_genomic"]
@@ -1238,6 +1242,12 @@ class WrittenRun:
     # Optional per-spectrum centroided flag (0 = profile, 1 = centroided).
     # Independent of M74 gating; written to ``spectrum_index/centroideds``.
     centroideds: np.ndarray | None = None
+    # M102 imaging-grid position per spectrum, written to
+    # ``spectrum_index/pixel_x|pixel_y|pixel_z`` (int32) and flagged
+    # ``opt_pixel_coordinates``. All three or none.
+    pixel_x: np.ndarray | None = None
+    pixel_y: np.ndarray | None = None
+    pixel_z: np.ndarray | None = None
     nucleus_type: str = ""
     # Optional NMR solvent label (e.g. "CDCl3", "DMSO-d6"). Empty when
     # not specified or when the run is not NMR. Written as the
@@ -1361,6 +1371,19 @@ def _write_run(parent: h5py.Group, name: str, run: WrittenRun) -> None:
     # Optional centroided column — independent of M74 gating.
     if run.centroideds is not None:
         columns.append(("centroideds", run.centroideds, "<i4"))
+    # M102 pixel columns — all three or none.
+    pixel_cols = (run.pixel_x, run.pixel_y, run.pixel_z)
+    if all(c is not None for c in pixel_cols):
+        columns += [
+            ("pixel_x", run.pixel_x, "<i4"),
+            ("pixel_y", run.pixel_y, "<i4"),
+            ("pixel_z", run.pixel_z, "<i4"),
+        ]
+    elif any(c is not None for c in pixel_cols):
+        raise ValueError(
+            "WrittenRun pixel_x/pixel_y/pixel_z must be either all-None or "
+            "all-set; partial population is not a valid schema state."
+        )
     for dname, data, dtype in columns:
         io.write_signal_channel(idx, dname, data.astype(dtype, copy=False),
                                 chunk_size=io.DEFAULT_INDEX_CHUNK)

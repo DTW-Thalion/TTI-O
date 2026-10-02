@@ -97,6 +97,10 @@ class SpectrumIndex:
     isolation_upper_offsets : numpy.ndarray | None
         (optional) Upper offset of the isolation window per
         spectrum. Zero when no isolation applied.
+    pixel_x, pixel_y, pixel_z : numpy.ndarray | None
+        (optional) Imaging-grid position of each spectrum (int32),
+        present together on runs written with the
+        ``opt_pixel_coordinates`` feature flag; ``None`` otherwise.
 
     Notes
     -----
@@ -125,6 +129,11 @@ class SpectrumIndex:
     # 1 = centroided`` per spectrum. Mirrors mzML CV terms MS:1000127
     # (centroid) and MS:1000128 (profile).
     centroideds: np.ndarray | None = None
+    # M102 imaging-grid position per spectrum (format-spec §4b). All
+    # three or none.
+    pixel_x: np.ndarray | None = None
+    pixel_y: np.ndarray | None = None
+    pixel_z: np.ndarray | None = None
 
     @property
     def count(self) -> int:
@@ -215,6 +224,25 @@ class SpectrumIndex:
             return False
         return bool(self.centroideds[index])
 
+    @property
+    def has_pixel_coordinates(self) -> bool:
+        """Whether the index carries the ``pixel_x/y/z`` columns."""
+        return self.pixel_x is not None
+
+    def pixel_coordinates_at(self, index: int) -> tuple[int, int, int] | None:
+        """Return the ``(x, y, z)`` imaging-grid position of spectrum
+        ``index``, or ``None`` when the run has no pixel columns.
+
+        Cross-language equivalents
+        --------------------------
+        Java: ``SpectrumIndex.pixelCoordinatesAt(i)`` · Objective-C:
+        ``-[TTIOSpectrumIndex pixelXAt:]`` / ``pixelYAt:`` / ``pixelZAt:``.
+        """
+        if self.pixel_x is None or self.pixel_y is None or self.pixel_z is None:
+            return None
+        return (int(self.pixel_x[index]), int(self.pixel_y[index]),
+                int(self.pixel_z[index]))
+
     # ------------------------------------------------------------------ #
     # Range queries                                                        #
     # ------------------------------------------------------------------ #
@@ -278,6 +306,19 @@ class SpectrumIndex:
         # Optional centroided column — independent of M74 gating.
         centroideds = col("centroideds", "<i4") if present("centroideds") else None
 
+        # M102 pixel columns: all three or none.
+        pixel_present = [present(n) for n in ("pixel_x", "pixel_y", "pixel_z")]
+        if any(pixel_present) and not all(pixel_present):
+            raise ValueError(
+                "spectrum_index is malformed: partial pixel_x/pixel_y/pixel_z "
+                "columns present")
+        if all(pixel_present):
+            pixel_x = col("pixel_x", "<i4")
+            pixel_y = col("pixel_y", "<i4")
+            pixel_z = col("pixel_z", "<i4")
+        else:
+            pixel_x = pixel_y = pixel_z = None
+
         # offsets is never on disk — synthesize from cumsum(lengths).
         from .genomic_index import _offsets_from_lengths
         lengths = col("lengths", "<u4")
@@ -296,6 +337,9 @@ class SpectrumIndex:
             isolation_lower_offsets=isolation_lower_offsets,
             isolation_upper_offsets=isolation_upper_offsets,
             centroideds=centroideds,
+            pixel_x=pixel_x,
+            pixel_y=pixel_y,
+            pixel_z=pixel_z,
         )
 
 

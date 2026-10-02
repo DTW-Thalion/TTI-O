@@ -11,6 +11,11 @@
 #import <Foundation/Foundation.h>
 #import "Core/TTIOProgressSink.h"
 
+@class TTIOAcquisitionRun;
+@class TTIOProvenanceRecord;
+@class TTIOWrittenRun;
+@class TTIOImportedDataset;
+
 NS_ASSUME_NONNULL_BEGIN
 
 /** Emit-every-N cadence for {@link TTIOProgressBlock} callbacks
@@ -166,7 +171,63 @@ FOUNDATION_EXPORT const NSUInteger TTIOImzMLReaderProgressIntervalPixels;
                                         progress:(nullable TTIOProgressBlock)progress
                                            error:(NSError **)error;
 
+#pragma mark - Pixel runs (M102)
+
+/**
+ * Pixel positions of <code>run</code> as interleaved
+ * <code>int32_t[count * 3]</code> (<code>x, y, z</code> per spectrum,
+ * in spectrum order), or <code>nil</code> when the run carries none.
+ *
+ * <p>Reads the <code>spectrum_index</code> pixel columns
+ * (format-spec §4b). For a run written before M102, falls back to the
+ * <code>imzml_pixel_coordinates_csv</code> provenance parameter: the
+ * run's own records first, then <code>datasetProvenance</code>. The
+ * parameter is used only when it lists exactly one triple per
+ * spectrum.</p>
+ *
+ * <p>Cross-language equivalents: Python
+ * <code>ttio.importers.imzml.run_pixel_coordinates</code>; Java
+ * <code>ImzMLReader.pixelCoordinatesOf</code>.</p>
+ */
++ (nullable NSData *)pixelCoordinatesForRun:(TTIOAcquisitionRun *)run
+                          datasetProvenance:(nullable NSArray<TTIOProvenanceRecord *> *)datasetProvenance;
+
+/**
+ * Builds the <code>imzml_pixels</code> run for <code>import</code>:
+ * one mass spectrum per pixel (channels <code>mz</code> +
+ * <code>intensity</code>, MS level 1, retention time 0, polarity
+ * unknown, base peak = the pixel's largest intensity), the pixel
+ * positions as <code>pixelX</code> / <code>pixelY</code> /
+ * <code>pixelZ</code>, and one run-level provenance record holding
+ * the <code>imzml_*</code> scalars.
+ *
+ * @return The run, or <code>nil</code> with <code>error</code> set
+ *         when the import has no pixels.
+ */
++ (nullable TTIOWrittenRun *)pixelRunFromImport:(TTIOImzMLImport *)import
+                                          error:(NSError **)error;
+
+/**
+ * Normalised import draft for <code>import</code>: the
+ * <code>imzml_pixels</code> run from
+ * <code>+pixelRunFromImport:error:</code>, the same provenance record
+ * at dataset level, and the title <code>title</code> or
+ * <code>"imzML import: &lt;file name&gt;"</code>. Mirrors Python's
+ * <code>ImzMLImport.to_imported_dataset</code>.
+ */
++ (nullable TTIOImportedDataset *)importedDatasetFromImport:(TTIOImzMLImport *)import
+                                                      title:(nullable NSString *)title
+                                                      error:(NSError **)error;
+
 @end
+
+/** Run name of the imzML importer's pixel run. */
+FOUNDATION_EXPORT NSString *const TTIOImzMLPixelRunName;
+
+/** Pre-M102 provenance parameter holding every pixel as
+ *  <code>"x,y,z;x,y,z;..."</code>. No longer written; read back by
+ *  <code>+pixelCoordinatesForRun:datasetProvenance:</code>. */
+FOUNDATION_EXPORT NSString *const TTIOImzMLLegacyCoordinatesParameter;
 
 extern NSString *const TTIOImzMLReaderErrorDomain;
 

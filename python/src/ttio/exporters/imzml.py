@@ -1,7 +1,8 @@
 """imzML + .ibd exporter (v0.9+).
 
 Reverses the M59 importer: takes an :class:`ttio.importers.imzml
-.ImzMLImport` (or an equivalent list of pixel spectra plus grid metadata)
+.ImzMLImport` (or an equivalent list of pixel spectra plus grid metadata,
+or an imported pixel run read back from a ``.tio``, :func:`write_from_run`)
 and emits a paired ``.imzML`` / ``.ibd`` on disk. Both the continuous
 mode (one shared m/z axis at the head of the .ibd, per-pixel intensity
 arrays following) and the processed mode (per-pixel m/z + intensity)
@@ -35,11 +36,16 @@ from typing import Iterable
 
 import numpy as np
 
-from ..importers.imzml import ImzMLImport, ImzMLPixelSpectrum
+from ..importers.imzml import (
+    ImzMLImport,
+    ImzMLPixelSpectrum,
+    run_pixel_coordinates,
+)
 from ..io.progress import ProgressSinkLike, _fire
 
 
-__all__ = ["write", "write_from_import", "WriteResult", "PROGRESS_INTERVAL_SPECTRA"]
+__all__ = ["write", "write_from_import", "write_from_run", "WriteResult",
+           "PROGRESS_INTERVAL_SPECTRA"]
 
 
 #: Mirror Java's ``ImzMLWriter.PROGRESS_INTERVAL_SPECTRA``.
@@ -241,6 +247,73 @@ def write_from_import(
         pixel_size_y=import_result.pixel_size_y,
         scan_pattern=import_result.scan_pattern,
         uuid_hex=import_result.uuid_hex,
+        progress=progress,
+    )
+
+
+def write_from_run(
+    run,
+    imzml_path: str | Path,
+    ibd_path: str | Path | None = None,
+    *,
+    dataset_provenance=(),
+    progress: ProgressSinkLike | None = None,
+) -> WriteResult:
+    """Write an imaging pixel run read from a ``.tio`` back to imzML.
+
+    ``run`` is an :class:`~ttio.acquisition_run.AcquisitionRun` whose
+    spectra are pixels: the imzML importer's ``imzml_pixels`` run, or
+    any run with the M102 ``spectrum_index`` pixel columns. Positions
+    come from :func:`ttio.importers.imzml.run_pixel_coordinates`, so a
+    pre-M102 run that kept them in the ``imzml_pixel_coordinates_csv``
+    provenance parameter also works. The storage mode, UUID, grid
+    extents, pixel size and scan pattern come from the importer's
+    ``imzml_*`` provenance parameters (run records first, then
+    ``dataset_provenance``) when present. Without ``imzml_mode`` the
+    mode is continuous when every pixel shares one m/z axis and
+    processed otherwise.
+
+    Raises ``ValueError`` when the run carries no pixel positions.
+    """
+    coords = run_pixel_coordinates(run, dataset_provenance)
+    if coords is None:
+        raise ValueError(
+            f"run {run.name!r} has no pixel coordinates to export as imzML")
+
+    # Run records win over dataset records, later records over earlier.
+    params: dict = {}
+    for record in reversed([*dataset_provenance, *run.provenance()]):
+        for key, value in record.parameters.items():
+            if key.startswith("imzml_"):
+                params.setdefault(key, value)
+
+    pixels: list[ImzMLPixelSpectrum] = []
+    for i, (x, y, z) in enumerate(coords):
+        arrays = run[i].signal_arrays
+        pixels.append(ImzMLPixelSpectrum(
+            x=int(x), y=int(y), z=int(z),
+            mz=np.asarray(arrays["mz"].data, dtype=np.float64),
+            intensity=np.asarray(arrays["intensity"].data, dtype=np.float64),
+        ))
+
+    mode = params.get("imzml_mode")
+    if mode not in ("continuous", "processed"):
+        first = pixels[0].mz if pixels else np.zeros(0)
+        shared = all(np.array_equal(p.mz, first) for p in pixels)
+        mode = "continuous" if shared else "processed"
+
+    return write(
+        pixels,
+        imzml_path=imzml_path,
+        ibd_path=ibd_path,
+        mode=mode,
+        grid_max_x=int(params.get("imzml_grid_max_x", 0) or 0),
+        grid_max_y=int(params.get("imzml_grid_max_y", 0) or 0),
+        grid_max_z=int(params.get("imzml_grid_max_z", 0) or 0),
+        pixel_size_x=float(params.get("imzml_pixel_size_x", 0.0) or 0.0),
+        pixel_size_y=float(params.get("imzml_pixel_size_y", 0.0) or 0.0),
+        scan_pattern=str(params.get("imzml_scan_pattern") or "flyback"),
+        uuid_hex=params.get("imzml_uuid_hex") or None,
         progress=progress,
     )
 

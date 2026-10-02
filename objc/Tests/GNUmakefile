@@ -98,6 +98,7 @@ TTIOTests_OBJC_FILES = \
 	TestM98AssemblyGraph.m \
 	TestM99BlocksV1PerAU.m \
 	TestM101SamTags.m \
+	TestM102PixelCoordinates.m \
 	TestNameTokenizerV2.m \
 	TestNameTokenizedV2Dispatch.m \
 	TestOffsetsCumsum.m \

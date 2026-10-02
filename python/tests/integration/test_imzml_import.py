@@ -305,8 +305,7 @@ def test_to_ttio_round_trip(tmp_path: Path) -> None:
             spec.signal_arrays["intensity"].data, meta["expected_intensity"][0]
         )
 
-        # Provenance preserves the imzML metadata for the future
-        # MSImage cube writer to consume.
+        # Provenance preserves the imzML grid metadata.
         prov = ds.provenance()
         assert len(prov) >= 1
         params = prov[0].parameters
@@ -314,10 +313,12 @@ def test_to_ttio_round_trip(tmp_path: Path) -> None:
         assert params["imzml_grid_max_x"] == 2
         assert params["imzml_grid_max_y"] == 2
         assert params["imzml_uuid_hex"] == meta["uuid_hex"]
-        # Coordinates encoded as "x,y,z;x,y,z;..." preserve scan order.
-        coords = params["imzml_pixel_coordinates_csv"].split(";")
-        assert coords[0] == "1,1,1"
-        assert coords[-1] == "2,2,1"
+        # M102: positions are spectrum_index columns in scan order,
+        # not a provenance parameter.
+        assert "imzml_pixel_coordinates_csv" not in params
+        assert ds.feature_flags.has("opt_pixel_coordinates")
+        assert run.index.pixel_coordinates_at(0) == (1, 1, 1)
+        assert run.index.pixel_coordinates_at(3) == (2, 2, 1)
 
 
 def test_continuous_round_trip_records_mode(tmp_path: Path) -> None:

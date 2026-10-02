@@ -383,6 +383,22 @@ static void _buildStdChannelEncoding(void)
                                 isolationUpperOffsets:isoU];
 }
 
+#pragma mark - Pixel coordinates (M102)
+
+- (BOOL)setPixelX:(NSData *)pixelX
+           pixelY:(NSData *)pixelY
+           pixelZ:(NSData *)pixelZ
+            error:(NSError **)error
+{
+    TTIOSpectrumIndex *idx = [_spectrumIndex indexWithPixelX:pixelX
+                                                      pixelY:pixelY
+                                                      pixelZ:pixelZ
+                                                       error:error];
+    if (!idx) return NO;
+    _spectrumIndex = idx;
+    return YES;
+}
+
 #pragma mark - HDF5 write
 
 - (BOOL)writeToGroup:(id<TTIOStorageGroup>)parent name:(NSString *)name error:(NSError **)error

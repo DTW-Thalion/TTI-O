@@ -30,6 +30,75 @@ aligned reads, so they come before new features.
    (NA12878 WES 1.26 against 3.22 MB), on `XA:Z` alternative-hit
    strings and the tag-line ids; SAM_TAGS needs a tokenised text column
    and an order-1 line-id coder (a codec version bump).
+5. **A reference-free model for bases.** Unaligned reads (FASTQ import,
+   and any run without a reference) code `sequences` with rANS order-1,
+   one read at a time, at about 1.94 bits per base, barely under 2-bit
+   packing. Nothing models the overlap between reads. Measured
+   2026-10-01 on the NA12878 WES chr22 reads as FASTQ, shuffled to
+   approximate sequencer order (992,974 reads, 95.0 M bases):
+   - **Bases:** TTI-O 23.0 MB against xz -9 8.3 MB (0.70 bits/base).
+     This loses 14.7 MB to xz.
+   - **Qualities:** TTI-O 25.9 MB against xz 29.6 MB, a 3.7 MB win.
+   - **Read names:** TTI-O 7.4 MB against xz 5.0 MB, a 2.4 MB loss.
+   - **Totals:** TTI-O 57.8 MB, against gzip -6 74.4 MB, zstd -19
+     54.6 MB, xz -9 48.1 MB and Spring 35.8 MB. TTI-O is 4.1x smaller
+     than the raw FASTQ, but behind every compressor here except gzip.
+
+   On HG002 2x250 chr22 as coordinate-ordered FASTQ, TTI-O is 1,501.0
+   MB against Spring 945.3 MB and xz -9 1,048.8 MB. The fix is a new
+   sequence codec (a codec id):
+   - an order-k context model over the preceding 12–24 bases, as
+     fqzcomp and CRAM use, which reaches about 0.5–1.5 bits per base
+     depending on coverage;
+   - optionally, read reordering as Spring does, which conflicts with
+     keeping the input order and would need a stored permutation.
+
+   Phase 0 should measure both on a high-coverage exome slice and a
+   sequencer-order whole-genome FASTQ, where cross-read redundancy is
+   far lower. The read-name tokenizer also loses on shuffled names
+   against xz; it is part of item 3.
+6. **Store MS data in the instrument's own representation.** TTI-O
+   stores every peak as float64 m/z, intensity and, for timsTOF, inverse
+   ion mobility. Many instruments measure integers on a grid plus a
+   calibration. The derived floats carry noise-like low bits that no
+   lossless coder removes. Measured 2026-10-01 on representative public
+   runs, with every format holding the same spectra (ThermoRawFileParser
+   `-p`, no peak picking):
+   - **timsTOF diaPASEF** (Ultra 2, PXD083082, 7.5 GB `.d`): TTI-O is an
+     estimated 2.05x larger than the vendor frame data (15.3 GB). This
+     was measured on a 1% frame window, because the Bruker importer
+     materialises the whole run and needs over 30 GB for it.
+   - **Orbitrap, profile data kept:** TTI-O is 1.14x the Thermo RAW on
+     plasma HILIC metabolomics (Exploris 480, MTBLS15210) and 1.08x on
+     plasma DIA (Exploris 480, PXD070072).
+   - **Elsewhere:** 0.90-0.94x the RAW on the other assays, and 2.3-2.7x
+     smaller than zlib mzML on all of them.
+
+   Expected value by instrument:
+   - **TOF instruments generally** (Bruker timsTOF, Sciex, Waters,
+     Agilent): large. Store integer TOF bins, ion counts and mobility
+     scan numbers with the calibration.
+   - **Orbitrap profile spectra:** probably real. Points lie on a
+     regular frequency grid, so the m/z axis is predictable from a
+     start, a spacing and the calibration; code only the gaps.
+   - **Centroided Orbitrap:** little. The m/z values are interpolated
+     peak positions with no grid.
+
+   Losslessness needs a decision: either reproduce the vendor's m/z bit
+   for bit from the stored indices (the vendor's calibration arithmetic
+   exactly), or define the raw indices as the truth and compute m/z on
+   read.
+
+   Phase 0, on the runs already downloaded:
+   - how regular the profile grids are in the Exploris runs;
+   - the integer TOF representation on the timsTOF window;
+   - whether vendor m/z reproduces exactly from indices plus
+     calibration.
+
+   Separately, the Bruker importer must stream frames as the BAM and
+   mzML paths do. A typical modern diaPASEF run cannot be imported on a
+   16 GB machine today, and failing to do so took the WSL VM down
+   twice.
 
 ---
 
@@ -903,6 +972,52 @@ Test deltas: Python 898 → 915 (+17 incl. JSON shape check), ObjC
   543 → 543 (no delta; coverage is in the cross-language
   harness).
 
+### M102 — imzML pixel coordinates (2026-10-01, PR open)
+
+- **Problem.** The Python imzML importer kept every pixel's position
+  in one provenance parameter, `imzml_pixel_coordinates_csv`, at run
+  and dataset level. Both levels are mirrored into a fixed-length
+  `@provenance_json` attribute, which HDF5 caps at 64 KB, so an import
+  failed with "object header message is too large" once the CSV
+  passed 64 KB (measured on main: 8,000 pixels on a 100-pixel-wide
+  grid wrote, 9,600 failed). PRIDE PXD001283
+  (HR2MSImouseurinarybladderS096, 34,840 pixels, a 306 KB CSV) could
+  not be imported; reading it also needs the referenceableParamGroupRef
+  fix of PR #331.
+- **Format.** Optional `spectrum_index/pixel_x|pixel_y|pixel_z` int32
+  columns, all or none, flagged `opt_pixel_coordinates`
+  (format-spec §4b, feature-flags M102). Binding decisions §101–§103.
+- **SDKs.** All three read and write the columns
+  (`SpectrumIndex.pixel_x` / `pixelX()` / `-pixelX`), read the legacy
+  CSV on older files, and export a pixel run back to imzML through the
+  registry writer when the dataset has no MS image cube. The Python
+  importer writes the columns instead of the CSV. The ObjC and Java
+  registry importers now import processed-mode imzML as the same
+  `imzml_pixels` run (they rejected it before); continuous mode still
+  builds an MSImage cube there.
+- **Tests.** A 15,000-pixel import → `.tio` → imzML regression and a
+  legacy-CSV read/export test in each SDK: Python
+  `test_imzml_pixel_coordinates.py` (7), Java
+  `ImzMLPixelCoordinatesTest` (8), ObjC `TestM102PixelCoordinates`
+  (50 checks).
+- **Follow-ups.**
+  1. **Transport.** The `.tis` writers do not carry the pixel columns
+     yet, so a transport round trip of a pixel run loses the
+     positions. Before M102 the CSV rode the dataset-level provenance
+     packet for imports small enough to write at all. The AU
+     MSImagePixel extension (transport-spec §4.3.1, `pixel_x/y/z`
+     uint32, wire spectrum class 4) is the place for them.
+  2. **Encrypted AU headers.** `opt_encrypted_au_headers` replaces
+     the plaintext `spectrum_index/*` arrays with
+     `au_header_segments`, and the feature-flags row lists pixel
+     coordinates among the encrypted fields, but the per-AU encryptors
+     do not yet fold the M102 pixel columns into the encrypted header;
+     they stay in plaintext. Fix together with item 1 (same xyz
+     envelope, transport-spec §4.3.3).
+  3. **Continuous-mode parity.** Python imports continuous-mode imzML
+     as a pixel run, ObjC and Java as an MSImage cube (a pre-M102
+     divergence). Pick one representation, or write both.
+
 ---
 
 ## Phase 6 — Framework Integration
@@ -1297,6 +1412,9 @@ is cheaper.
 | 98 | MD/NM are DERIVED only in a blob whose block codes `sequences` with REF_DIFF_V2, against the reference that blob names. | A reader that can decode the sequences already has that reference, so the tags never add a reference dependency of their own. |
 | 99 | The `tags` channel exists only in runs whose reads carry tags: no dataset, no `blocks/index` columns and no `opt_sam_tags` otherwise. The index's `tags_off`, `tags_len`, `tags_codec` follow the required columns; readers treat absent columns as an empty channel; a stream writer whose first tagged block follows untagged blocks rewrites the index once with the triple. Transport lists a `tags` AU channel and a BlockSidecar `tags` entry only for such runs. | Files and streams without tags stay byte-identical to pre-M101 output, the additive-content precedent of `opt_assembly_graph`; trailing columns keep every existing column at its position for positional writers. |
 | 100 | Per-AU encryption encrypts `tags` whenever it encrypts `sequences` (one AU per read, plaintext the read's tag text), signatures cover the `tags` dataset, and the whole-channel and region encryption paths refuse a run that carries tags. | An MD string lists the read's mismatches against the reference, i.e. its variants, so leaving tags in plaintext would defeat sequence encryption; refusing is safer than a partial protection the caller cannot see. |
+| 101 | Imaging pixel positions (M102) are three int32 `spectrum_index/` columns, `pixel_x`, `pixel_y`, `pixel_z`, present together or not at all and flagged `opt_pixel_coordinates`; values are stored as the source numbered them (imzML counts from 1). | Positions are per-spectrum data and grow with the pixel count, so they belong with the other per-spectrum columns (chunked, compressed, read with the index) rather than in provenance, which is mirrored into a 64 KB attribute. int32 matches the other integer index columns; the values are never negative, and transport carries them as uint32. |
+| 102 | The pre-M102 `imzml_pixel_coordinates_csv` provenance parameter is read-only: writers no longer emit it, and readers use it only for a run without pixel columns, taking the run's records first and then the dataset's, and only when it lists exactly one `x,y,z` triple per spectrum. | Files written before M102 (up to roughly 9,000 pixels) keep their positions and still export; the count check stops a CSV that belongs to another run, or a truncated one, from being applied. |
+| 103 | The ObjC and Java registry imzML importers keep continuous mode as an MSImage cube and import processed mode as the `imzml_pixels` run Python writes (columns plus the `imzml_*` provenance scalars); every registry imzML exporter writes the cube when the dataset has one and otherwise the first MS run with pixel positions, taking the mode, UUID, grid, pixel size and scan pattern from the `imzml_*` parameters. | Processed mode has a per-pixel m/z axis and cannot be a dense cube, so it needs the run in every SDK; changing the continuous path would change existing ObjC/Java output and is a separate decision (M102 follow-up 3). |
 
 ---
 

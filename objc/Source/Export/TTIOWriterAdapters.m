@@ -170,20 +170,37 @@ static NSString *_owaWithSuffix(NSString *output, NSString *ext)
              options:(NSDictionary<NSString *, id> *)options
                error:(NSError *_Nullable *_Nullable)error
 {
-    (void)layer;
     // The ObjC -msImage accessor never returns nil for a valid .tio: when
     // the file has no /study/image_cube it yields a degenerate empty image
     // (width/height/spectralPoints == 0). Treat that as "no image" so the
     // guard matches Java's `ds.image() == null` and Python's `img is None`.
     TTIOMSImage *img = (TTIOMSImage *)[dataset imageForKind:TTIOImageKindMS];
+    // Python: ibd = Path(output).with_suffix(".ibd").
+    NSString *ibd = _owaWithSuffix(output, @".ibd");
     if (img == nil ||
         img.width == 0 || img.height == 0 || img.spectralPoints == 0) {
+        // M102: no cube — an imported pixel run (spectrum_index pixel
+        // columns, or the pre-M102 provenance CSV) exports with its own
+        // positions. First matching MS run in name order; `layer`
+        // restricts the search to that run.
+        NSArray<TTIOProvenanceRecord *> *dsProv = dataset.provenanceRecords;
+        NSArray *names = [[dataset.msRuns allKeys]
+            sortedArrayUsingSelector:@selector(compare:)];
+        for (NSString *name in names) {
+            if (layer.length && ![name isEqualToString:layer]) continue;
+            TTIOAcquisitionRun *run = dataset.msRuns[name];
+            if ([TTIOImzMLReader pixelCoordinatesForRun:run
+                                      datasetProvenance:dsProv] == nil) continue;
+            return [TTIOImzMLWriter writeRun:run
+                           datasetProvenance:dsProv
+                                 toImzMLPath:output
+                                     ibdPath:ibd
+                                       error:error] != nil;
+        }
         if (error) *error =
             _owaError(@"dataset has no MS image to export as imzML");
         return NO;
     }
-    // Python: ibd = Path(output).with_suffix(".ibd").
-    NSString *ibd = _owaWithSuffix(output, @".ibd");
     NSString *mode = _owaOptString(options, @"mode") ?: @"continuous";
 
     // Project the image's pixel spectra (TTIOPixelSpectrum) into the

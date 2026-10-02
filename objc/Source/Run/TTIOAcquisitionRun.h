@@ -146,6 +146,23 @@
                 acquisitionMode:(TTIOAcquisitionMode)mode
                instrumentConfig:(TTIOInstrumentConfig *)config;
 
+#pragma mark - Pixel coordinates (M102)
+
+/**
+ * Attaches imaging-grid positions to the run's spectrum index (each
+ * <code>int32_t[spectrum count]</code>; three <code>nil</code>s drop
+ * them). The index then writes the <code>pixel_x</code> /
+ * <code>pixel_y</code> / <code>pixel_z</code> columns and the dataset
+ * writer adds <code>opt_pixel_coordinates</code> (format-spec §4b).
+ *
+ * @return <code>NO</code> with <code>error</code> set when only some
+ *         columns are given or a length does not match.
+ */
+- (BOOL)setPixelX:(NSData *)pixelX
+           pixelY:(NSData *)pixelY
+           pixelZ:(NSData *)pixelZ
+            error:(NSError **)error;
+
 #pragma mark - Storage round-trip
 
 /**

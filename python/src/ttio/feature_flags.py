@@ -63,6 +63,11 @@ OPT_NATIVE_2D_COS = "opt_native_2d_cos"
 # parse the base columns.
 OPT_MS2_ACTIVATION_DETAIL = "opt_ms2_activation_detail"
 
+# M102: spectrum_index carries the pixel_x / pixel_y / pixel_z int32
+# columns of an imaging run (format-spec §4b). Added only when a run
+# carries them.
+OPT_PIXEL_COORDINATES = "opt_pixel_coordinates"
+
 @dataclass(frozen=True, slots=True)
 class FeatureFlags:
     """Immutable set of format feature strings with a version label."""

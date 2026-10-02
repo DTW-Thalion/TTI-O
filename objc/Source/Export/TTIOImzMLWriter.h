@@ -6,6 +6,8 @@
 
 @class TTIOImzMLPixelSpectrum;
 @class TTIOImzMLImport;
+@class TTIOAcquisitionRun;
+@class TTIOProvenanceRecord;
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -120,6 +122,36 @@ FOUNDATION_EXPORT const NSUInteger TTIOImzMLWriterProgressIntervalPixels;
                                         uuidHex:(nullable NSString *)uuidHex
                                        progress:(nullable TTIOProgressBlock)progress
                                           error:(NSError * _Nullable * _Nullable)error;
+
+/**
+ * Writes an imaging pixel run read from a <code>.tio</code> back to
+ * imzML (M102). <code>run</code> is the imzML importer's
+ * <code>imzml_pixels</code> run, or any MS run whose positions
+ * <code>+[TTIOImzMLReader pixelCoordinatesForRun:datasetProvenance:]</code>
+ * finds (the <code>spectrum_index</code> pixel columns, or the
+ * pre-M102 <code>imzml_pixel_coordinates_csv</code> parameter).
+ * Pixels are written in spectrum order with each spectrum's
+ * <code>mz</code> / <code>intensity</code> arrays.
+ *
+ * <p>Mode, UUID, grid extents, pixel size and scan pattern come from
+ * the <code>imzml_*</code> provenance parameters (run records first,
+ * then <code>datasetProvenance</code>; later records win) when
+ * present, else the writer's defaults. Without
+ * <code>imzml_mode</code> the mode is continuous when every spectrum
+ * shares one m/z array and processed otherwise.</p>
+ *
+ * <p>Cross-language equivalents: Python
+ * <code>ttio.exporters.imzml.write_from_run</code>.</p>
+ *
+ * @return The write result, or <code>nil</code> with
+ *         <code>error</code> set (including when the run carries no
+ *         pixel positions).
+ */
++ (nullable TTIOImzMLWriteResult *)writeRun:(TTIOAcquisitionRun *)run
+                          datasetProvenance:(nullable NSArray<TTIOProvenanceRecord *> *)datasetProvenance
+                                toImzMLPath:(NSString *)imzmlPath
+                                    ibdPath:(nullable NSString *)ibdPath
+                                      error:(NSError * _Nullable * _Nullable)error;
 
 /** Progress-aware overload of {@link writeFromImport:toImzMLPath:ibdPath:error:}. */
 + (nullable TTIOImzMLWriteResult *)writeFromImport:(TTIOImzMLImport *)import

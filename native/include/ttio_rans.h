@@ -574,6 +574,59 @@ int ttio_sam_tags_decode(
 
 void ttio_sam_tags_free(void *p);
 
+/* ──────────────────────────────────────────────────────────────────────
+ * SEQ_CM — read bases coded with a reference-free context-mixing model
+ * (up to three base-context lengths, a logistic mixer and an optional
+ * reverse-complement training pass) and a binary arithmetic coder
+ * (codec id 19, M103). Spec: docs/codecs/seq_cm.md.
+ *
+ * The blob is written as signal_channels/sequences with @compression = 19.
+ * Wire magic "SQC1", version 0x01.
+ *
+ * seq holds the reads' bases back to back; lengths[i] is read i's length.
+ * Decode takes the same lengths. Bytes other than A/C/G/T (N, IUPAC,
+ * lower case) round-trip as exception runs. params == NULL takes the
+ * defaults of ttio_seq_cm_default_params; table_bits == 0 lets the
+ * encoder choose from the base count. The model holds 12 << table_bits
+ * bytes per long order, on encode and on decode.
+ *
+ * Returns 0 on success; TTIO_RANS_ERR_PARAM on bad input (lengths that
+ * do not match the blob included), TTIO_RANS_ERR_ALLOC, or
+ * TTIO_RANS_ERR_CORRUPT on a blob that violates the spec.
+ * ────────────────────────────────────────────────────────────────────── */
+#define TTIO_SEQ_CM_FLAG_RC 0x01    /* train on each read's reverse complement */
+
+typedef struct {
+    uint8_t  n_orders;              /* 1 .. 3                              */
+    uint8_t  orders[3];             /* context lengths in bases, rising    */
+    uint8_t  table_bits;            /* 10 .. 30, or 0 for automatic        */
+    uint8_t  flags;                 /* TTIO_SEQ_CM_FLAG_*                  */
+    uint16_t limit;                 /* counter adaptation limit, 1 .. 1023 */
+    uint16_t lr;                    /* mixer learning rate, 1 .. 4096      */
+} ttio_seq_cm_params;
+
+void ttio_seq_cm_default_params(ttio_seq_cm_params *p);
+
+/* *out is allocated by the library; release it with ttio_seq_cm_free. */
+int ttio_seq_cm_encode(
+    const uint8_t  *seq,
+    const uint64_t *lengths,
+    uint64_t        n_reads,
+    const ttio_seq_cm_params *params,
+    uint8_t       **out,
+    size_t         *out_len);
+
+/* *out_seq is allocated by the library (release with ttio_seq_cm_free). */
+int ttio_seq_cm_decode(
+    const uint8_t  *encoded,
+    size_t          encoded_len,
+    const uint64_t *lengths,
+    uint64_t        n_reads,
+    uint8_t       **out_seq,
+    size_t         *out_len);
+
+void ttio_seq_cm_free(void *p);
+
 #ifdef __cplusplus
 }
 #endif

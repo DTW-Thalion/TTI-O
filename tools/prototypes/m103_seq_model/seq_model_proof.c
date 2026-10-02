@@ -19,7 +19,12 @@
  * Bases other than ACGT (N, IUPAC) are not modelled: they reset the
  * context and are counted separately; the codec stores them as exceptions.
  *
- * usage: seq_model_proof [--rc] [--table-bits B] k1 [k2 [k3]]  < reads.fastq
+ * --block-bases N resets the whole model (tables and mixer) at the first
+ * read boundary after every N bases, as a codec that codes each blocks_v1
+ * block on its own must (format-spec 10.12; blocks hold 64 MiB of bases).
+ *
+ * usage: seq_model_proof [--rc] [--table-bits B] [--block-bases N] k1 [k2 [k3]]
+ *        < reads.fastq
  */
 #include <math.h>
 #include <stdint.h>
@@ -41,7 +46,9 @@ typedef struct {
     counter *t;         /* [1 << bits][3] */
 } order_model;
 
-static int g_limit = 60;   /* counter rate saturates at 1/(limit+1.5) */
+static int g_limit = 60;
+
+   /* counter rate saturates at 1/(limit+1.5) */
 
 static inline int squash(int d) { /* stretch domain (x/256) -> 12-bit prob */
     if (d > 2047) d = 2047;
@@ -73,6 +80,15 @@ typedef struct {
     float w[3 * 64][MAX_ORDERS + 1];  /* mixer weights per (node, confidence bucket) */
     double bits;
 } model;
+
+static void model_reset(model *M) {
+    for (int i = 0; i < M->n_orders; i++) {
+        order_model *m = &M->o[i];
+        for (size_t j = 0; j < ((size_t)3 << m->bits); j++) { m->t[j].p = 32768; m->t[j].n = 0; }
+    }
+    for (int i = 0; i < 3 * 64; i++)
+        for (int j = 0; j <= MAX_ORDERS; j++) M->w[i][j] = (j < M->n_orders) ? 1.0f / M->n_orders : 0;
+}
 
 /* Code (or just train on) one base; returns nothing, accumulates bits. */
 static void code_base(model *M, uint64_t hist, int base, int count_bits) {
@@ -133,9 +149,11 @@ static void code_read(model *M, const char *s, size_t len, int count_bits,
 
 int main(int argc, char **argv) {
     int rc = 0, table_bits = 24, ai = 1;
+    uint64_t block_bases = 0, since_reset = 0, n_resets = 0;
     while (ai < argc && argv[ai][0] == '-') {
         if (!strcmp(argv[ai], "--rc")) rc = 1;
         else if (!strcmp(argv[ai], "--table-bits") && ai + 1 < argc) table_bits = atoi(argv[++ai]);
+        else if (!strcmp(argv[ai], "--block-bases") && ai + 1 < argc) block_bases = strtoull(argv[++ai], NULL, 10);
         else if (!strcmp(argv[ai], "--limit") && ai + 1 < argc) g_limit = atoi(argv[++ai]);
         ai++;
     }
@@ -178,6 +196,7 @@ int main(int argc, char **argv) {
     }
     printf("orders");
     for (int i = 0; i < M.n_orders; i++) printf(" %d", M.o[i].k);
+    if (block_bases) printf(" block_bases %llu (%llu resets)", (unsigned long long)block_bases, (unsigned long long)n_resets);
     printf("%s table_bits %d: reads %llu bases %llu other %llu  bits/base %.4f  bytes %.0f\n",
            rc ? " +rc" : "", table_bits, (unsigned long long)n_reads, (unsigned long long)n_bases,
            (unsigned long long)n_other, n_bases ? M.bits / n_bases : 0.0, M.bits / 8);

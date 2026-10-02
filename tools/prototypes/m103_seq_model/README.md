@@ -98,8 +98,10 @@ At ~1x the reads barely overlap, so little is left to model.
 1. A mixed order-11/16/24 model with reverse-complement training reaches
    0.56 bits/base on the exome slice and 0.45 on the 65x chr22 slice:
    3.5x and 4.3x smaller than today, and below xz on the exome.
-2. Read order barely matters (shuffled vs sorted differ by 2-3%), so the
-   gain does not depend on alignment and needs no read reordering.
+2. With one model over the whole run, read order barely matters
+   (shuffled vs sorted differ by 2-3%). Coded per 64 MiB block, as the
+   writer does, it matters a great deal: HG002 chr22 is 0.35 bits/base
+   in coordinate order and 1.45 in name-hash order (table above).
 3. Model memory is the main lever on high-coverage data. On HG002 the
    hashed long orders saturate: 2^24 to 2^26 entries per order cuts 41%,
    2^26 to 2^28 another 31%. At 2^28 (4-byte counters, about 3.2 GB per
@@ -117,5 +119,6 @@ At ~1x the reads barely overlap, so little is left to model.
 - Table size policy: fixed tiers (2^24 / 2^26 / 2^28) chosen from the
   base count, recorded in the stream header.
 - Block policy for unaligned runs (see the per-block table above).
-- Arithmetic coder: `native/src/rc_cram` (CRAM range coder) is the
-  candidate.
+- Arithmetic coder: the kernel uses its own carry-less binary coder
+  (docs/codecs/seq_cm.md section 4) rather than `rc_cram`, whose
+  multi-symbol interface costs a division per decision.

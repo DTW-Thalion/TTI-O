@@ -284,6 +284,86 @@ def read(
     in_position = False
     in_scan_settings = False  # disambiguate IMS:1000042 by context
     array_kind = ""  # "mz" or "intensity"
+    # <referenceableParamGroup id=...> cvParams, applied wherever a
+    # <referenceableParamGroupRef ref=...> appears. Writers commonly
+    # declare the array kind / precision / compression of every
+    # binaryDataArray this way (e.g. the HR2MSI PXD001283 files).
+    param_groups: dict[str, list[tuple[str, str]]] = {}
+    in_group: str | None = None
+
+    def handle_cv(accession: str, value: str) -> None:
+        nonlocal state_mode, state_uuid, scan_pattern, array_kind
+        if accession in _CONTINUOUS_ACCESSIONS:
+            state_mode = "continuous"
+        elif accession in _PROCESSED_ACCESSIONS:
+            state_mode = "processed"
+        elif accession == "IMS:1000080" and value:  # canonical UUID accession
+            state_uuid = _normalise_uuid(value)
+        elif accession == "IMS:1000042" and in_scan_settings and value:
+            # canonical max count of pixels x (inside scanSettings)
+            grid_max[0] = int(value)
+        elif accession == "IMS:1000043" and value:  # canonical max count of pixels y
+            grid_max[1] = int(value)
+        elif accession == "IMS:1000003" and value:  # legacy UUID-adjacent accession
+            # Seen in the wild + our pre-0.9 synthetic fixtures as
+            # a placeholder for max count of pixels x. Accept for
+            # round-trip with older TTIO outputs.
+            grid_max[0] = int(value)
+        elif accession == "IMS:1000004" and value:  # legacy max count of pixels y
+            grid_max[1] = int(value)
+        elif accession == "IMS:1000005" and value:  # legacy max count of pixels z
+            grid_max[2] = int(value)
+        elif accession == "IMS:1000042" and value and state_uuid == "":
+            # Legacy TTIO pre-0.9 synthetic fixtures used IMS:1000042
+            # for UUID (outside scanSettings). Accept as fallback when
+            # the canonical IMS:1000080 hasn't been seen yet and the
+            # value looks like a UUID hex string (dashes + braces OK).
+            candidate = _normalise_uuid(value)
+            if len(candidate) == 32:
+                state_uuid = candidate
+        elif accession == "IMS:1000046" and value:  # pixel size x
+            pixel_size[0] = float(value)
+        elif accession == "IMS:1000047" and value:  # pixel size y
+            pixel_size[1] = float(value)
+        elif accession in {"IMS:1000040", "IMS:1000048"} and value:  # scan pattern / type
+            scan_pattern = scan_pattern or value
+        elif in_position and current is not None:
+            if accession == "IMS:1000050" and value:  # position x
+                current.x = int(value)
+            elif accession == "IMS:1000051" and value:  # position y
+                current.y = int(value)
+            elif accession == "IMS:1000052" and value:  # position z
+                current.z = int(value)
+        elif in_binary_array and current is not None:
+            if accession == "MS:1000514":  # m/z array
+                array_kind = "mz"
+            elif accession == "MS:1000515":  # intensity array
+                array_kind = "intensity"
+            elif accession == "MS:1000523":  # 64-bit float
+                if array_kind == "mz":
+                    current.mz_precision = "64"
+                elif array_kind == "intensity":
+                    current.int_precision = "64"
+            elif accession == "MS:1000521":  # 32-bit float
+                if array_kind == "mz":
+                    current.mz_precision = "32"
+                elif array_kind == "intensity":
+                    current.int_precision = "32"
+            elif accession == "IMS:1000102" and value:  # external offset
+                if array_kind == "mz":
+                    current.mz_offset = int(value)
+                elif array_kind == "intensity":
+                    current.int_offset = int(value)
+            elif accession == "IMS:1000103" and value:  # external array length
+                if array_kind == "mz":
+                    current.mz_length = int(value)
+                elif array_kind == "intensity":
+                    current.int_length = int(value)
+            elif accession == "IMS:1000104" and value:  # external encoded length
+                if array_kind == "mz":
+                    current.mz_encoded_length = int(value)
+                elif array_kind == "intensity":
+                    current.int_encoded_length = int(value)
 
     for event, elem in iterparse(str(imzml), events=("start", "end")):
         tag = _local(elem.tag)
@@ -298,6 +378,9 @@ def read(
                 in_position = True
             elif tag == "scanSettings":
                 in_scan_settings = True
+            elif tag == "referenceableParamGroup":
+                in_group = elem.attrib.get("id", "")
+                param_groups[in_group] = []
             continue
 
         # event == "end"
@@ -313,80 +396,17 @@ def read(
             array_kind = ""
         elif tag == "scan":
             in_position = False
+        elif tag == "referenceableParamGroup":
+            in_group = None
+        elif tag == "referenceableParamGroupRef":
+            for accession, value in param_groups.get(elem.attrib.get("ref", ""), ()):
+                handle_cv(accession, value)
         elif tag == "cvParam":
             accession = elem.attrib.get("accession", "")
             value = elem.attrib.get("value", "")
-            if accession in _CONTINUOUS_ACCESSIONS:
-                state_mode = "continuous"
-            elif accession in _PROCESSED_ACCESSIONS:
-                state_mode = "processed"
-            elif accession == "IMS:1000080" and value:  # canonical UUID accession
-                state_uuid = _normalise_uuid(value)
-            elif accession == "IMS:1000042" and in_scan_settings and value:
-                # canonical max count of pixels x (inside scanSettings)
-                grid_max[0] = int(value)
-            elif accession == "IMS:1000043" and value:  # canonical max count of pixels y
-                grid_max[1] = int(value)
-            elif accession == "IMS:1000003" and value:  # legacy UUID-adjacent accession
-                # Seen in the wild + our pre-0.9 synthetic fixtures as
-                # a placeholder for max count of pixels x. Accept for
-                # round-trip with older TTIO outputs.
-                grid_max[0] = int(value)
-            elif accession == "IMS:1000004" and value:  # legacy max count of pixels y
-                grid_max[1] = int(value)
-            elif accession == "IMS:1000005" and value:  # legacy max count of pixels z
-                grid_max[2] = int(value)
-            elif accession == "IMS:1000042" and value and state_uuid == "":
-                # Legacy TTIO pre-0.9 synthetic fixtures used IMS:1000042
-                # for UUID (outside scanSettings). Accept as fallback when
-                # the canonical IMS:1000080 hasn't been seen yet and the
-                # value looks like a UUID hex string (dashes + braces OK).
-                candidate = _normalise_uuid(value)
-                if len(candidate) == 32:
-                    state_uuid = candidate
-            elif accession == "IMS:1000046" and value:  # pixel size x
-                pixel_size[0] = float(value)
-            elif accession == "IMS:1000047" and value:  # pixel size y
-                pixel_size[1] = float(value)
-            elif accession in {"IMS:1000040", "IMS:1000048"} and value:  # scan pattern / type
-                scan_pattern = scan_pattern or value
-            elif in_position and current is not None:
-                if accession == "IMS:1000050" and value:  # position x
-                    current.x = int(value)
-                elif accession == "IMS:1000051" and value:  # position y
-                    current.y = int(value)
-                elif accession == "IMS:1000052" and value:  # position z
-                    current.z = int(value)
-            elif in_binary_array and current is not None:
-                if accession == "MS:1000514":  # m/z array
-                    array_kind = "mz"
-                elif accession == "MS:1000515":  # intensity array
-                    array_kind = "intensity"
-                elif accession == "MS:1000523":  # 64-bit float
-                    if array_kind == "mz":
-                        current.mz_precision = "64"
-                    elif array_kind == "intensity":
-                        current.int_precision = "64"
-                elif accession == "MS:1000521":  # 32-bit float
-                    if array_kind == "mz":
-                        current.mz_precision = "32"
-                    elif array_kind == "intensity":
-                        current.int_precision = "32"
-                elif accession == "IMS:1000102" and value:  # external offset
-                    if array_kind == "mz":
-                        current.mz_offset = int(value)
-                    elif array_kind == "intensity":
-                        current.int_offset = int(value)
-                elif accession == "IMS:1000103" and value:  # external array length
-                    if array_kind == "mz":
-                        current.mz_length = int(value)
-                    elif array_kind == "intensity":
-                        current.int_length = int(value)
-                elif accession == "IMS:1000104" and value:  # external encoded length
-                    if array_kind == "mz":
-                        current.mz_encoded_length = int(value)
-                    elif array_kind == "intensity":
-                        current.int_encoded_length = int(value)
+            if in_group is not None:
+                param_groups[in_group].append((accession, value))
+            handle_cv(accession, value)
 
         elem.clear()
 

@@ -60,6 +60,39 @@ order from the BAM.
 | --rc 11 + 16 + 22 | 2^28 | 0.453 | 150 MB |
 | --rc 11 + 16 + 24 | 2^28 | **0.452** | **149 MB** |
 
+### SEQ_CM kernel in 64 MiB blocks (the blocks_v1 writer's)
+
+`native/tools/seq_cm_fastq` codes each block on its own (model restarted)
+and checks the round trip. Default parameters (orders 11/16/24, RC,
+automatic table_bits = 24).
+
+| Data | Read order | Blocks | bits/base | Bases | Encode / decode |
+|---|---|---|---|---|---|
+| WES chr22 | coordinate | 2 | 0.496 | 5.90 MB | 8.6 / 8.3 MB/s |
+| WES chr22 | shuffled | 2 | 0.624 | 7.42 MB | 4.8 / 4.6 MB/s |
+| HG002 chr22 | coordinate | 40 | **0.348** | 114.9 MB | 7.4 / 6.8 MB/s |
+| HG002 chr22 | name hash (collate) | 40 | 1.453 | 480.4 MB | 3.3 / 3.2 MB/s |
+
+Per-block coding is order-sensitive: a block of coordinate-ordered reads
+holds one region at full depth, so it beats the whole-run model (0.35
+against 0.45); a block of shuffled reads holds ~1.7x of the whole
+chromosome, so the long contexts rarely see a read's overlap partner.
+Shuffled or sequencer-order FASTQ needs either larger blocks for this
+channel or reads grouped by sequence before blocking (with the input
+order stored).
+
+### HG002 HiSeq WGS slice (22.5 M reads, 3.33 G bases, ~1x, sequencer order)
+
+`run_wgs.sh`, whole-run prototype. xz -9 on the sequence lines: 769.4 MB
+(1.85 bits/base).
+
+| Model | Tables | bits/base |
+|---|---|---|
+| --rc 11 + 16 + 24 | 2^24 | 1.675 |
+| --rc 11 + 16 + 24 | 2^26 | 1.645 |
+
+At ~1x the reads barely overlap, so little is left to model.
+
 ## Findings
 
 1. A mixed order-11/16/24 model with reverse-complement training reaches
@@ -83,10 +116,6 @@ order from the BAM.
 - Collision handling (check bits per slot) against plain hashing.
 - Table size policy: fixed tiers (2^24 / 2^26 / 2^28) chosen from the
   base count, recorded in the stream header.
-- Speed: one core does about 3 M bases/s with `--rc` and three orders;
-  the codec needs block-parallel coding, which resets or shares the model.
-  Measure the loss from per-block models.
-- The sequencer-order whole-genome FASTQ measurement the WORKPLAN asks for
-  is still to do (needs a download).
+- Block policy for unaligned runs (see the per-block table above).
 - Arithmetic coder: `native/src/rc_cram` (CRAM range coder) is the
   candidate.

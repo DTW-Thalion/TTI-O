@@ -30,6 +30,75 @@ aligned reads, so they come before new features.
    (NA12878 WES 1.26 against 3.22 MB), on `XA:Z` alternative-hit
    strings and the tag-line ids; SAM_TAGS needs a tokenised text column
    and an order-1 line-id coder (a codec version bump).
+5. **A reference-free model for bases.** Unaligned reads (FASTQ import,
+   and any run without a reference) code `sequences` with rANS order-1,
+   one read at a time, at about 1.94 bits per base, barely under 2-bit
+   packing. Nothing models the overlap between reads. Measured
+   2026-10-01 on the NA12878 WES chr22 reads as FASTQ, shuffled to
+   approximate sequencer order (992,974 reads, 95.0 M bases):
+   - **Bases:** TTI-O 23.0 MB against xz -9 8.3 MB (0.70 bits/base).
+     This loses 14.7 MB to xz.
+   - **Qualities:** TTI-O 25.9 MB against xz 29.6 MB, a 3.7 MB win.
+   - **Read names:** TTI-O 7.4 MB against xz 5.0 MB, a 2.4 MB loss.
+   - **Totals:** TTI-O 57.8 MB, against gzip -6 74.4 MB, zstd -19
+     54.6 MB, xz -9 48.1 MB and Spring 35.8 MB. TTI-O is 4.1x smaller
+     than the raw FASTQ, but behind every compressor here except gzip.
+
+   On HG002 2x250 chr22 as coordinate-ordered FASTQ, TTI-O is 1,501.0
+   MB against Spring 945.3 MB and xz -9 1,048.8 MB. The fix is a new
+   sequence codec (a codec id):
+   - an order-k context model over the preceding 12–24 bases, as
+     fqzcomp and CRAM use, which reaches about 0.5–1.5 bits per base
+     depending on coverage;
+   - optionally, read reordering as Spring does, which conflicts with
+     keeping the input order and would need a stored permutation.
+
+   Phase 0 should measure both on a high-coverage exome slice and a
+   sequencer-order whole-genome FASTQ, where cross-read redundancy is
+   far lower. The read-name tokenizer also loses on shuffled names
+   against xz; it is part of item 3.
+6. **Store MS data in the instrument's own representation.** TTI-O
+   stores every peak as float64 m/z, intensity and, for timsTOF, inverse
+   ion mobility. Many instruments measure integers on a grid plus a
+   calibration. The derived floats carry noise-like low bits that no
+   lossless coder removes. Measured 2026-10-01 on representative public
+   runs, with every format holding the same spectra (ThermoRawFileParser
+   `-p`, no peak picking):
+   - **timsTOF diaPASEF** (Ultra 2, PXD083082, 7.5 GB `.d`): TTI-O is an
+     estimated 2.05x larger than the vendor frame data (15.3 GB). This
+     was measured on a 1% frame window, because the Bruker importer
+     materialises the whole run and needs over 30 GB for it.
+   - **Orbitrap, profile data kept:** TTI-O is 1.14x the Thermo RAW on
+     plasma HILIC metabolomics (Exploris 480, MTBLS15210) and 1.08x on
+     plasma DIA (Exploris 480, PXD070072).
+   - **Elsewhere:** 0.90-0.94x the RAW on the other assays, and 2.3-2.7x
+     smaller than zlib mzML on all of them.
+
+   Expected value by instrument:
+   - **TOF instruments generally** (Bruker timsTOF, Sciex, Waters,
+     Agilent): large. Store integer TOF bins, ion counts and mobility
+     scan numbers with the calibration.
+   - **Orbitrap profile spectra:** probably real. Points lie on a
+     regular frequency grid, so the m/z axis is predictable from a
+     start, a spacing and the calibration; code only the gaps.
+   - **Centroided Orbitrap:** little. The m/z values are interpolated
+     peak positions with no grid.
+
+   Losslessness needs a decision: either reproduce the vendor's m/z bit
+   for bit from the stored indices (the vendor's calibration arithmetic
+   exactly), or define the raw indices as the truth and compute m/z on
+   read.
+
+   Phase 0, on the runs already downloaded:
+   - how regular the profile grids are in the Exploris runs;
+   - the integer TOF representation on the timsTOF window;
+   - whether vendor m/z reproduces exactly from indices plus
+     calibration.
+
+   Separately, the Bruker importer must stream frames as the BAM and
+   mzML paths do. A typical modern diaPASEF run cannot be imported on a
+   16 GB machine today, and failing to do so took the WSL VM down
+   twice.
 
 ---
 

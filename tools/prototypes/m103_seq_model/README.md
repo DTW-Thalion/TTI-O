@@ -90,6 +90,7 @@ order stored).
 |---|---|---|
 | --rc 11 + 16 + 24 | 2^24 | 1.675 |
 | --rc 11 + 16 + 24 | 2^26 | 1.645 |
+| SEQ_CM kernel, 64 MiB blocks (50), round trip checked | 2^24 | 1.737 (723.6 MB; 4.3 / 4.1 MB/s) |
 
 At ~1x the reads barely overlap, so little is left to model.
 

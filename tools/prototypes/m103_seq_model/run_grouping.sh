@@ -27,11 +27,13 @@ echo "== HG002 chr22, input order";       ./seqcm_group --as-is --pos hg002.coll
 echo "== HG002 chr22, single k-mer";      ./seqcm_group --group --pos hg002.collp.pos < hg002.collp.fq
 echo "== HG002 chr22, single k-mer pairs"; ./seqcm_group --group --pairs < hg002.collp.fq
 echo "== HG002 chr22, chained";           ./seqcm_group --chain --pos hg002.collp.pos < hg002.collp.fq
+echo "== HG002 chr22, chained, w 16";    ./seqcm_group --chain --group-w 16 --pos hg002.collp.pos < hg002.collp.fq
 for f in wes.shuf.fq wes.sorted.fq; do
   echo "== WES chr22 $f"
   ./seqcm_group < $f
   ./seqcm_group --group < $f
   ./seqcm_group --group --pairs < $f
+  ./seqcm_group --chain --group-w 32 < $f
   ./seqcm_group --chain < $f
   ./seqcm_group --chain --min-votes 1 < $f
 done

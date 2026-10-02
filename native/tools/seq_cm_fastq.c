@@ -19,7 +19,8 @@
  *
  * usage: seq_cm_fastq [--block-bases N] [--table-bits B] [--no-rc]
  *                     [--group [--group-k K] [--pairs] | --chain [--group-k K]
- *                      [--group-w W] [--max-occ N] [--min-votes V] | --as-is]
+ *                      [--group-w W (0: from read length)] [--max-occ N]
+ *                      [--min-votes V] | --as-is]
  *                     [--pos POSITIONS] [--no-code]
  *                     [k1 [k2 [k3]]] < reads.fastq
  */
@@ -159,12 +160,26 @@ typedef struct {
     uint8_t pad;
 } mz_own;
 
-static int ent_cmp(const void *a, const void *b)
+/* Sort by hash with an LSD radix sort, 16 bits a pass. Stable, and the
+ * entries arrive in (read, offset) order, so equal hashes keep that order.
+ * Returns 0, or -1 when the buffer cannot be allocated. */
+static int sort_ents(mz_ent *a, size_t n)
 {
-    const mz_ent *x = a, *y = b;
-    if (x->h != y->h) return x->h < y->h ? -1 : 1;
-    if (x->r != y->r) return x->r < y->r ? -1 : 1;
-    return (int)x->off - (int)y->off;
+    mz_ent *t = malloc((n ? n : 1) * sizeof *t);
+    size_t *cnt = malloc(((size_t)1 << 16) * sizeof *cnt);
+    if (!t || !cnt) { free(t); free(cnt); return -1; }
+    for (int shift = 0; shift < 64; shift += 16) {
+        memset(cnt, 0, ((size_t)1 << 16) * sizeof *cnt);
+        for (size_t i = 0; i < n; i++) cnt[(a[i].h >> shift) & 0xFFFF]++;
+        size_t sum = 0;
+        for (size_t d = 0; d < ((size_t)1 << 16); d++) { size_t c = cnt[d]; cnt[d] = sum; sum += c; }
+        for (size_t i = 0; i < n; i++) t[cnt[(a[i].h >> shift) & 0xFFFF]++] = a[i];
+        mz_ent *sw = a; a = t; t = sw;
+    }
+    /* Four passes: the sorted data is back in the caller's buffer. */
+    free(t);
+    free(cnt);
+    return 0;
 }
 
 /* Window minimizers of one read; returns the number written to out. */
@@ -219,10 +234,13 @@ static size_t read_minimizers(const uint8_t *s, uint64_t l, int k, int w, uint32
 }
 
 typedef struct {
-    uint32_t r;
+    int64_t P;      /* start in the chain's frame */
+    uint32_t r;     /* UINT32_MAX: empty slot */
     uint8_t o;
-    int64_t P;
+    uint16_t votes;
 } cand;
+
+enum { VOTE_BITS = 17 };    /* vote table slots: 2^17, kept under half full */
 
 typedef struct {
     const uint64_t *len;
@@ -234,20 +252,12 @@ typedef struct {
     int k;
     uint32_t max_occ;
     unsigned min_votes;         /* shared minimizers that must agree on the offset */
-    cand *scratch;
-    size_t scratch_cap;
+    cand *vt;                   /* vote table, open addressing on (r, o, P) */
+    uint32_t *used;             /* its occupied slots, in insertion order */
 } chain_ctx;
 
 #define VISITED(x, r) (((x)->visited[(r) >> 6] >> ((r) & 63)) & 1)
 #define SET_VISITED(x, r) ((x)->visited[(r) >> 6] |= 1ull << ((r) & 63))
-
-static int cand_cmp(const void *a, const void *b)
-{
-    const cand *x = a, *y = b;
-    if (x->r != y->r) return x->r < y->r ? -1 : 1;
-    if (x->o != y->o) return (int)x->o - (int)y->o;
-    return x->P < y->P ? -1 : (x->P > y->P);
-}
 
 enum { NB_LEFT, NB_RIGHT };
 
@@ -259,7 +269,8 @@ enum { NB_LEFT, NB_RIGHT };
 static int best_neighbour(const chain_ctx *x, uint32_t cur, int o, int64_t P, int mode, unsigned votes,
                           uint32_t *nr, int *no, int64_t *nP)
 {
-    size_t nc = 0;
+    size_t nu = 0;
+    const size_t mask = ((size_t)1 << VOTE_BITS) - 1, cap = (size_t)1 << (VOTE_BITS - 1);
     const int64_t k = x->k, lc = (int64_t)x->len[cur];
     for (uint64_t j = x->ostart[cur]; j < x->ostart[(uint64_t)cur + 1]; j++) {
         const mz_own *e = &x->own[j];
@@ -267,30 +278,39 @@ static int best_neighbour(const chain_ctx *x, uint32_t cur, int o, int64_t P, in
         if (hi - lo < 2 || hi - lo > x->max_occ) continue;
         int64_t kpos = o ? P + e->off : P + lc - e->off - k;
         int c = (o == e->s);
-        for (uint32_t i = lo; i < hi && nc < x->scratch_cap; i++) {
+        for (uint32_t i = lo; i < hi && nu < cap; i++) {
             const mz_hit *h = &x->hits[i];
             if (h->r == cur || VISITED(x, h->r)) continue;
-            int on = c ? h->s : !h->s;
-            x->scratch[nc].r = h->r;
-            x->scratch[nc].o = (uint8_t)on;
-            x->scratch[nc].P = on ? kpos - h->off : kpos - ((int64_t)x->len[h->r] - h->off - k);
-            nc++;
+            uint8_t on = (uint8_t)(c ? h->s : !h->s);
+            int64_t Pn = on ? kpos - h->off : kpos - ((int64_t)x->len[h->r] - h->off - k);
+            size_t slot = mix64(((uint64_t)h->r << 1 | on) ^ ((uint64_t)Pn * 0x9E3779B97F4A7C15ull)) & mask;
+            for (;;) {
+                cand *v = &x->vt[slot];
+                if (v->r == UINT32_MAX) {
+                    v->r = h->r; v->o = on; v->P = Pn; v->votes = 1;
+                    x->used[nu++] = (uint32_t)slot;
+                    break;
+                }
+                if (v->r == h->r && v->o == on && v->P == Pn) {
+                    if (v->votes < UINT16_MAX) v->votes++;
+                    break;
+                }
+                slot = (slot + 1) & mask;
+            }
         }
     }
-    if (votes > 1) qsort(x->scratch, nc, sizeof *x->scratch, cand_cmp);
     int found = 0;
     int64_t best = mode == NB_RIGHT ? INT64_MAX : INT64_MIN;
-    for (size_t i = 0; i < nc;) {
-        size_t g = i + 1;
-        if (votes > 1)
-            while (g < nc && x->scratch[g].r == x->scratch[i].r && x->scratch[g].o == x->scratch[i].o &&
-                   x->scratch[g].P == x->scratch[i].P) g++;
-        const cand *cd = &x->scratch[i];
-        if (g - i >= votes) {
+    for (size_t i = 0; i < nu; i++) {
+        cand *cd = &x->vt[x->used[i]];
+        if (cd->votes >= votes) {
             int64_t sh = cd->P - P;
             int better;
-            if (mode == NB_RIGHT) better = sh >= 0 && (sh < best || (sh == best && cd->r < *nr));
-            else better = sh < 0 && (sh > best || (sh == best && cd->r < *nr));
+            /* Ties go to the lower read, then orientation 0, so the layout
+             * does not depend on the vote table's slot order. */
+            int tie = sh == best && (cd->r < *nr || (cd->r == *nr && cd->o < *no));
+            if (mode == NB_RIGHT) better = sh >= 0 && (sh < best || tie);
+            else better = sh < 0 && (sh > best || tie);
             if (better) {
                 best = sh;
                 *nr = cd->r;
@@ -299,8 +319,8 @@ static int best_neighbour(const chain_ctx *x, uint32_t cur, int o, int64_t P, in
                 found = 1;
             }
         }
-        i = g;
     }
+    for (size_t i = 0; i < nu; i++) x->vt[x->used[i]].r = UINT32_MAX;
     return found;
 }
 
@@ -342,7 +362,7 @@ static long long chain_order(const uint8_t *seq, const uint64_t *off, const uint
         ne += m;
     }
     free(hb); free(sb); free(dq); free(tmp);
-    qsort(ents, ne, sizeof *ents, ent_cmp);
+    if (sort_ents(ents, ne)) return -1;
 
     /* Buckets, per-bucket hits and per-read own minimizers. */
     size_t nb = 0;
@@ -376,12 +396,14 @@ static long long chain_order(const uint8_t *seq, const uint64_t *off, const uint
     *t_index = now() - t0;
 
     chain_ctx x = { len, bstart, hits, ostart, own, calloc((n + 63) / 64, sizeof(uint64_t)), k, max_occ,
-                    g_min_votes, malloc((1u << 16) * sizeof(cand)), 1u << 16 };
+                    g_min_votes, malloc(((size_t)1 << VOTE_BITS) * sizeof(cand)),
+                    malloc(((size_t)1 << (VOTE_BITS - 1)) * sizeof(uint32_t)) };
     uint64_t *left = malloc(n * sizeof *left);
     uint64_t *deferred = malloc(n * sizeof *deferred);
     uint32_t *stack = malloc(n * sizeof *stack);   /* placed reads, most recent on top */
     size_t nd = 0, ns = 0;
-    if (!x.visited || !left || !x.scratch || !deferred || !stack) return -1;
+    if (!x.visited || !left || !x.vt || !x.used || !deferred || !stack) return -1;
+    for (size_t i = 0; i < ((size_t)1 << VOTE_BITS); i++) x.vt[i].r = UINT32_MAX;
     size_t no = 0, next_input = 0;
     long long chains = 0;
     for (;;) {
@@ -439,7 +461,8 @@ static long long chain_order(const uint8_t *seq, const uint64_t *off, const uint
     free(stack);
     free(deferred);
     free(left);
-    free(x.scratch);
+    free(x.vt);
+    free(x.used);
     free(x.visited);
     free(bstart);
     free(hits);
@@ -510,13 +533,30 @@ static void report_locality(const char *path, const uint64_t *order, size_t n_un
     free(pos);
 }
 
+/* The minimizer window for --group-w 0: ceil(median read length / 8),
+ * clamped to 8..32, so a read carries ~16 minimizers whatever its length
+ * (32 for 250 bp reads, 13 for 100 bp). Two of them must agree on an
+ * offset (--min-votes), which a read with only ~5 rarely manages. */
+static int auto_window(const uint64_t *len, size_t n)
+{
+    enum { MAXL = 65536 };
+    size_t *hist = calloc(MAXL, sizeof *hist);
+    if (!hist || !n) { free(hist); return 32; }
+    for (size_t i = 0; i < n; i++) hist[len[i] < MAXL ? len[i] : MAXL - 1]++;
+    size_t acc = 0, med = 0;
+    while (med < MAXL && (acc += hist[med]) < (n + 1) / 2) med++;
+    free(hist);
+    int w = (int)((med + 7) / 8);
+    return w < 8 ? 8 : w > 32 ? 32 : w;
+}
+
 int main(int argc, char **argv)
 {
     coder c;
     memset(&c, 0, sizeof c);
     ttio_seq_cm_default_params(&c.p);
     unsigned long long block_bases = 64ull << 20;
-    int ai = 1, n_orders = 0, group = 0, chain = 0, as_is = 0, no_code = 0, pairs = 0, group_k = 20, group_w = 32;
+    int ai = 1, n_orders = 0, group = 0, chain = 0, as_is = 0, no_code = 0, pairs = 0, group_k = 20, group_w = 0;
     unsigned max_occ = 256;
     const char *pos_path = NULL;  /* diagnostic: one mapping position per read, input order */
     while (ai < argc) {
@@ -538,7 +578,7 @@ int main(int argc, char **argv)
     }
     if (n_orders) c.p.n_orders = (uint8_t)n_orders;
     if (group_k < 8 || group_k > 32) { fprintf(stderr, "--group-k must be 8 to 32\n"); return 2; }
-    if (group_w < 1) { fprintf(stderr, "--group-w must be at least 1\n"); return 2; }
+    if (group_w < 0) { fprintf(stderr, "--group-w must be 0 (from read length) or more\n"); return 2; }
     if (chain && pairs) { fprintf(stderr, "--chain orders single reads; --pairs is not supported with it\n"); return 2; }
     long long n_chains = 0;
     double t_index = 0;
@@ -581,6 +621,7 @@ int main(int argc, char **argv)
         if (as_is) {
             for (size_t u = 0; u < n_units; u++) order[u] = u;
         } else if (chain) {
+            if (group_w == 0) group_w = auto_window(len, n);
             n_chains = chain_order(seq, off, len, n, group_k, group_w, max_occ, order, &t_index);
             if (n_chains < 0) { fprintf(stderr, "out of memory while chaining\n"); return 1; }
             printf("chain k %d w %d max-occ %u min-votes %u: %lld chains (%.1f reads each; "

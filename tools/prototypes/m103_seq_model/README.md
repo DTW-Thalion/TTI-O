@@ -113,8 +113,10 @@ reported at its ideal size, log2(n!) bits, and as fixed-width indices;
 - `--group`: sort reads by their canonical minimizer (k = 20, least hash
   over both strands), then by offset from it. `--pairs` keeps mates
   together and permutes pairs.
-- `--chain`: overlap layout. Each read is indexed by its (w = 32, k = 20)
-  window minimizers on both strands. From a seed, walk to the unplaced
+- `--chain`: overlap layout. Each read is indexed by its (w, k = 20)
+  window minimizers on both strands, w = ceil(median read length / 8)
+  clamped to 8..32 (32 for 250 bp reads, 13 for 100 bp), so a read carries
+  about 16 whatever its length. From a seed, walk to the unplaced
   read with the least positive offset, tracking strand and offset, then
   the same leftwards. A neighbour counts only when 2 minimizers agree on
   its offset (`--min-votes`), and minimizers shared by over 256 reads are
@@ -131,16 +133,21 @@ reported at its ideal size, log2(n!) bits, and as fixed-width indices;
 | `--group --pairs` | 0.925 | 0.042 | 0.967 |
 | `--group` | 0.568 | 0.088 | 0.656 |
 | `--chain`, first version (1 vote, next seed from the last 64 reads) | 0.511 | 0.088 | 0.599 |
-| `--chain` (as committed) | **0.407** | 0.088 | **0.495** |
+| `--chain` (w 32) | **0.407** | 0.088 | **0.495** |
+| `--chain --group-w 16` | 0.426 | 0.088 | 0.514 |
 | coordinate order (needs the alignment) | 0.348 | | 0.348 |
 
 Fixed-width indices cost 0.096 bits/base here (0.503 total). Grouping
 by pairs loses: mates come from opposite ends of a fragment, so keying a
 pair on one mate leaves the other among unrelated reads.
 
-`--chain` as committed: 381,995 chains, 307,158 reads moved to the end
-(2.9%), 58,597 seeds from input order; indexing 60 s, grouping 237.5 s
-in all, peak RSS about 7.3 GB; coding 8.9 / 8.3 MB/s.
+`--chain` (w 32): 381,995 chains, 307,158 reads moved to the end (2.9%),
+58,597 seeds from input order; peak RSS about 7.3 GB; coding 8.3 / 7.8
+MB/s. Indexing takes 33.5 s and grouping 93.7 s in all, down from 60 s and
+237.5 s when the index was qsorted and every step sorted its candidates
+(now a stable radix sort and a vote hash table; the layout is identical).
+A denser window does not help 250 bp reads: w 16 is 0.426 bits/base,
+with 11.7 GB peak RSS and 165 s of grouping.
 
 ### Where the rest of the gap is
 
@@ -154,7 +161,7 @@ block's reads in its 20 busiest 100 kb bins.
 | input order (mates adjacent) | 49.9% | 383 | |
 | `--group` | 76.9% | 383 | 9.8% |
 | `--chain`, 1 vote | 80.4% | 383 | |
-| `--chain` (as committed) | 93.1% | 355 | 26.7% |
+| `--chain` (w 32) | 93.1% | 355 | 26.7% |
 
 The chains are locally sound but the blocks are still far from one region
 at full depth. On simulated error-free reads (3 Mbp, 30x, half reverse
@@ -173,21 +180,22 @@ copies.
 | `--group` | 0.556 | 0.193 | 0.749 |
 | `--group --pairs` | 0.598 | 0.091 | 0.689 |
 | `--chain`, first version (1 vote, next seed from the last 64 reads) | 0.514 | 0.193 | 0.707 |
-| `--chain` (as committed) | 0.526 | 0.193 | 0.719 |
+| `--chain --group-w 32` | 0.526 | 0.193 | 0.719 |
+| `--chain` (w 13 from read length) | **0.503** | 0.193 | 0.696 |
+| `--chain --min-votes 1` (w 13) | 0.500 | 0.193 | 0.693 |
 | coordinate order | 0.496 | | 0.496 |
 
 At exome depth the permutation costs more than grouping saves, so a
-writer must choose per run whether to group. The committed `--chain` is
-worse here than the first version: a ~100 bp read carries about 5
-minimizers at w = 32, so 2 agreeing ones are rare and 21% of reads end
-up moved to the end.
+writer must choose per run whether to group. At w = 32 a ~100 bp read
+carries about 5 minimizers, 2 agreeing ones are rare, and 21% of reads
+end up moved to the end; at w = 13 that is 13%, and the bases come
+within 0.007 bits/base of coordinate order. A window of 8 or 16 gives
+0.501 and 0.505; 3 votes 0.506. Grouping takes 3.6 s.
 
 ### Open
 
-- Grouping speed: 237.5 s for 10.6 M reads, mostly a sort of the
-  candidates at every step.
-- Short reads: the vote threshold or the minimizer density has to follow
-  read length.
+- Grouping speed: 93.7 s for 10.6 M reads, single-threaded; indexing and
+  the walk can both be split across threads.
 - Reads moved to the end and the remaining input-order seeds.
 - When a writer groups: a rule from coverage and read count.
 - The permutation's wire format, and random access by input index (a

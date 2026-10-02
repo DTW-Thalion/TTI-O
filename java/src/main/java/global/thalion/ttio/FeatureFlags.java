@@ -79,6 +79,12 @@ public final class FeatureFlags {
      *  {@code signal_channels/tags} channel (SAM_TAGS, codec id 18;
      *  M101, format-spec §10.13). Tag-less files never carry it. */
     public static final String OPT_SAM_TAGS = "opt_sam_tags";
+    /** at least one run's {@code spectrum_index/} carries the
+     *  {@code pixel_x}, {@code pixel_y}, {@code pixel_z} int32 columns:
+     *  each spectrum's position on an imaging grid (M102,
+     *  format-spec §4b). Written only when a run carries the columns,
+     *  so other files stay byte-identical. */
+    public static final String OPT_PIXEL_COORDINATES = "opt_pixel_coordinates";
 
     private static final Set<String> REQUIRED = Set.of(
         BASE_V1, COMPOUND_IDENTIFICATIONS, COMPOUND_QUANTIFICATIONS,
@@ -91,7 +97,8 @@ public final class FeatureFlags {
         OPT_KEY_ROTATION, OPT_ANONYMIZED, OPT_PQC_PREVIEW,
         OPT_PER_AU_ENCRYPTION, OPT_ENCRYPTED_AU_HEADERS,
         OPT_REGION_KEYED_ENCRYPTION,
-        OPT_MS2_ACTIVATION_DETAIL
+        OPT_MS2_ACTIVATION_DETAIL,
+        OPT_PIXEL_COORDINATES
     );
 
     private final String formatVersion;

@@ -47,4 +47,9 @@
     return self;
 }
 
+- (BOOL)hasPixelCoordinates
+{
+    return _pixelX != nil || _pixelY != nil || _pixelZ != nil;
+}
+
 @end

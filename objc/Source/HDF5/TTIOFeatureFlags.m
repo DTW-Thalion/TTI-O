@@ -37,6 +37,7 @@
 + (NSString *)featureOptGenomic              { return @"opt_genomic"; }
 + (NSString *)featureOptAssemblyGraph        { return @"opt_assembly_graph"; }
 + (NSString *)featureOptSamTags              { return @"opt_sam_tags"; }
++ (NSString *)featurePixelCoordinates        { return @"opt_pixel_coordinates"; }
 + (NSString *)featureNoSignalIntDups         { return @"opt_no_signal_int_dups"; }
 
 + (NSString *)formatVersionForRoot:(TTIOHDF5Group *)root

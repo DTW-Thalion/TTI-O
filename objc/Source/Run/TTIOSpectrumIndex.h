@@ -161,6 +161,55 @@
 /** @return YES when the centroideds column is present. */
 @property (readonly) BOOL hasCentroided;
 
+#pragma mark - Pixel coordinates (M102)
+
+/**
+ * Imaging-grid x position of every spectrum as
+ * <code>int32_t[count]</code>, or <code>nil</code> when the run
+ * carries no pixel columns (format-spec §4b,
+ * <code>opt_pixel_coordinates</code>). <code>pixelX</code>,
+ * <code>pixelY</code> and <code>pixelZ</code> are present together
+ * or not at all.
+ */
+@property (readonly, copy) NSData *pixelX;
+
+/** Imaging-grid y positions, <code>int32_t[count]</code> or
+ *  <code>nil</code>. */
+@property (readonly, copy) NSData *pixelY;
+
+/** Imaging-grid z positions, <code>int32_t[count]</code> or
+ *  <code>nil</code>; <code>1</code> for a 2-D acquisition. */
+@property (readonly, copy) NSData *pixelZ;
+
+/** <code>YES</code> when the three pixel columns are present. */
+@property (readonly) BOOL hasPixelCoordinates;
+
+/** @return Pixel x of spectrum <code>index</code>; <code>0</code>
+ *          when the pixel columns are absent. */
+- (int32_t)pixelXAt:(NSUInteger)index;
+
+/** @return Pixel y of spectrum <code>index</code>; <code>0</code>
+ *          when the pixel columns are absent. */
+- (int32_t)pixelYAt:(NSUInteger)index;
+
+/** @return Pixel z of spectrum <code>index</code>; <code>0</code>
+ *          when the pixel columns are absent. */
+- (int32_t)pixelZAt:(NSUInteger)index;
+
+/**
+ * Returns a copy of this index carrying the given pixel columns
+ * (each <code>int32_t[count]</code>) in place of any it had. Pass
+ * three <code>nil</code>s to drop the columns.
+ *
+ * @return The new index, or <code>nil</code> with
+ *         <code>error</code> set when only some of the columns are
+ *         given or a column's length is not <code>count</code>.
+ */
+- (instancetype)indexWithPixelX:(NSData *)pixelX
+                         pixelY:(NSData *)pixelY
+                         pixelZ:(NSData *)pixelZ
+                          error:(NSError **)error;
+
 #pragma mark - Storage round-trip
 
 /**
@@ -173,7 +222,10 @@
 - (BOOL)writeToGroup:(id<TTIOStorageGroup>)parent error:(NSError **)error;
 
 /**
- * Reads the index from <code>parent/spectrum_index/</code>.
+ * Reads the index from <code>parent/spectrum_index/</code>. A group
+ * holding only some of <code>pixel_x</code> / <code>pixel_y</code> /
+ * <code>pixel_z</code> is malformed and fails with
+ * <code>TTIOErrorUnsupportedLayout</code>.
  *
  * @param parent Source parent group.
  * @param error  Out-parameter populated on failure.

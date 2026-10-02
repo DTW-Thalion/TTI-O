@@ -21,10 +21,19 @@
 
 #import "TTIOImzMLReader.h"
 #import "Import/TTIOXMLStreamParser.h"
+#import "Import/TTIOImportedDataset.h"
+#import "Dataset/TTIOProvenanceRecord.h"
+#import "Dataset/TTIOWrittenRun.h"
+#import "Run/TTIOAcquisitionRun.h"
+#import "Run/TTIOSpectrumIndex.h"
+#import "ValueClasses/TTIOEnums.h"
+#import <time.h>
 
 #import <unistd.h>
 
 NSString *const TTIOImzMLReaderErrorDomain = @"TTIOImzMLReaderErrorDomain";
+NSString *const TTIOImzMLPixelRunName = @"imzml_pixels";
+NSString *const TTIOImzMLLegacyCoordinatesParameter = @"imzml_pixel_coordinates_csv";
 
 // Mirrors Java ImzMLReader.PROGRESS_INTERVAL_PIXELS (100).
 const NSUInteger TTIOImzMLReaderProgressIntervalPixels = 100;
@@ -560,6 +569,171 @@ static NSString *normaliseUUID(NSString *value) {
     for (NSUInteger i = 0; i < n; i++) dst[i] = (double)src[i];
     free(raw);
     return [NSData dataWithBytesNoCopy:dst length:n * sizeof(double) freeWhenDone:YES];
+}
+
+#pragma mark - Pixel runs (M102)
+
+/* Parses "x,y,z;x,y,z;..." into int32_t[count * 3]; nil unless the
+ * value is a string listing exactly `count` integer triples. */
+static NSData *parseLegacyCoordinates(id value, NSUInteger count)
+{
+    if (![value isKindOfClass:[NSString class]] || [(NSString *)value length] == 0) return nil;
+    NSArray<NSString *> *triples = [(NSString *)value componentsSeparatedByString:@";"];
+    if (triples.count != count) return nil;
+    NSMutableData *out = [NSMutableData dataWithLength:count * 3 * sizeof(int32_t)];
+    int32_t *p = (int32_t *)out.mutableBytes;
+    NSCharacterSet *ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    for (NSUInteger i = 0; i < count; i++) {
+        NSArray<NSString *> *parts = [triples[i] componentsSeparatedByString:@","];
+        if (parts.count != 3) return nil;
+        for (NSUInteger k = 0; k < 3; k++) {
+            NSString *t = [parts[k] stringByTrimmingCharactersInSet:ws];
+            NSScanner *sc = [NSScanner scannerWithString:t];
+            long long v = 0;
+            if (t.length == 0 || ![sc scanLongLong:&v] || ![sc isAtEnd]) return nil;
+            if (v < INT32_MIN || v > INT32_MAX) return nil;
+            p[i * 3 + k] = (int32_t)v;
+        }
+    }
+    return out;
+}
+
++ (nullable NSData *)pixelCoordinatesForRun:(TTIOAcquisitionRun *)run
+                          datasetProvenance:(nullable NSArray<TTIOProvenanceRecord *> *)datasetProvenance
+{
+    TTIOSpectrumIndex *idx = run.spectrumIndex;
+    NSUInteger n = idx.count;
+    if (idx.hasPixelCoordinates) {
+        NSMutableData *out = [NSMutableData dataWithLength:n * 3 * sizeof(int32_t)];
+        int32_t *p = (int32_t *)out.mutableBytes;
+        for (NSUInteger i = 0; i < n; i++) {
+            p[i * 3]     = [idx pixelXAt:i];
+            p[i * 3 + 1] = [idx pixelYAt:i];
+            p[i * 3 + 2] = [idx pixelZAt:i];
+        }
+        return out;
+    }
+    NSMutableArray<TTIOProvenanceRecord *> *records = [NSMutableArray array];
+    [records addObjectsFromArray:[run provenanceChain] ?: @[]];
+    [records addObjectsFromArray:datasetProvenance ?: @[]];
+    for (TTIOProvenanceRecord *r in records) {
+        NSData *c = parseLegacyCoordinates(r.parameters[TTIOImzMLLegacyCoordinatesParameter], n);
+        if (c) return c;
+    }
+    return nil;
+}
+
++ (TTIOProvenanceRecord *)provenanceRecordForImport:(TTIOImzMLImport *)import
+{
+    NSDictionary *params = @{
+        @"imzml_mode":         import.mode ?: @"",
+        @"imzml_uuid_hex":     import.uuidHex ?: @"",
+        @"imzml_grid_max_x":   @((long long)import.gridMaxX),
+        @"imzml_grid_max_y":   @((long long)import.gridMaxY),
+        @"imzml_grid_max_z":   @((long long)import.gridMaxZ),
+        @"imzml_pixel_size_x": @(import.pixelSizeX),
+        @"imzml_pixel_size_y": @(import.pixelSizeY),
+        @"imzml_scan_pattern": import.scanPattern ?: @"",
+    };
+    return [[TTIOProvenanceRecord alloc]
+        initWithInputRefs:@[import.sourceImzML ?: @"", import.sourceIbd ?: @""]
+                 software:@"ttio imzml importer v0.9"
+               parameters:params
+               outputRefs:@[]
+            timestampUnix:(int64_t)time(NULL)];
+}
+
++ (nullable TTIOWrittenRun *)pixelRunFromImport:(TTIOImzMLImport *)import
+                                          error:(NSError **)error
+{
+    NSArray<TTIOImzMLPixelSpectrum *> *spectra = import.spectra;
+    NSUInteger n = spectra.count;
+    if (n == 0) {
+        if (error) *error = [self errorWithCode:TTIOImzMLReaderErrorMissingMetadata
+            message:[NSString stringWithFormat:@"%@: no spectra parsed",
+                     import.sourceImzML]];
+        return nil;
+    }
+    NSUInteger total = 0;
+    for (TTIOImzMLPixelSpectrum *s in spectra) total += s.mzCount;
+
+    NSMutableData *mz  = [NSMutableData dataWithCapacity:total * sizeof(double)];
+    NSMutableData *it  = [NSMutableData dataWithCapacity:total * sizeof(double)];
+    NSMutableData *off = [NSMutableData dataWithLength:n * sizeof(int64_t)];
+    NSMutableData *len = [NSMutableData dataWithLength:n * sizeof(uint32_t)];
+    NSMutableData *rt  = [NSMutableData dataWithLength:n * sizeof(double)];
+    NSMutableData *ml  = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    NSMutableData *pol = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    NSMutableData *pmz = [NSMutableData dataWithLength:n * sizeof(double)];
+    NSMutableData *pc  = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    NSMutableData *bp  = [NSMutableData dataWithLength:n * sizeof(double)];
+    NSMutableData *px  = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    NSMutableData *py  = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    NSMutableData *pz  = [NSMutableData dataWithLength:n * sizeof(int32_t)];
+    int64_t  *offP = off.mutableBytes;
+    uint32_t *lenP = len.mutableBytes;
+    int32_t  *mlP  = ml.mutableBytes;
+    int32_t  *polP = pol.mutableBytes;
+    double   *bpP  = bp.mutableBytes;
+    int32_t  *pxP  = px.mutableBytes;
+    int32_t  *pyP  = py.mutableBytes;
+    int32_t  *pzP  = pz.mutableBytes;
+
+    int64_t cursor = 0;
+    for (NSUInteger i = 0; i < n; i++) {
+        TTIOImzMLPixelSpectrum *s = spectra[i];
+        NSUInteger m = s.mzCount;
+        [mz appendBytes:s.mzArray.bytes length:m * sizeof(double)];
+        [it appendBytes:s.intensityArray.bytes length:m * sizeof(double)];
+        offP[i] = cursor;
+        lenP[i] = (uint32_t)m;
+        mlP[i]  = 1;
+        polP[i] = (int32_t)TTIOPolarityUnknown;
+        const double *ip = (const double *)s.intensityArray.bytes;
+        double maxI = 0.0;
+        for (NSUInteger j = 0; j < m; j++) {
+            if (j == 0 || ip[j] > maxI) maxI = ip[j];
+        }
+        bpP[i] = maxI;
+        pxP[i] = (int32_t)s.x;
+        pyP[i] = (int32_t)s.y;
+        pzP[i] = (int32_t)s.z;
+        cursor += (int64_t)m;
+    }
+
+    TTIOWrittenRun *run = [[TTIOWrittenRun alloc]
+        initWithSpectrumClassName:@"TTIOMassSpectrum"
+                  acquisitionMode:0
+                      channelData:@{@"mz": mz, @"intensity": it}
+                          offsets:off
+                          lengths:len
+                   retentionTimes:rt
+                         msLevels:ml
+                       polarities:pol
+                     precursorMzs:pmz
+                 precursorCharges:pc
+              basePeakIntensities:bp];
+    run.pixelX = px;
+    run.pixelY = py;
+    run.pixelZ = pz;
+    run.provenanceRecords = @[[self provenanceRecordForImport:import]];
+    return run;
+}
+
++ (nullable TTIOImportedDataset *)importedDatasetFromImport:(TTIOImzMLImport *)import
+                                                      title:(nullable NSString *)title
+                                                      error:(NSError **)error
+{
+    TTIOWrittenRun *run = [self pixelRunFromImport:import error:error];
+    if (!run) return nil;
+    TTIOImportedDataset *d = [[TTIOImportedDataset alloc] init];
+    d.title = title.length
+        ? title
+        : [NSString stringWithFormat:@"imzML import: %@",
+           [import.sourceImzML lastPathComponent]];
+    d.msRuns[TTIOImzMLPixelRunName] = run;
+    [d.provenanceRecords addObjectsFromArray:run.provenanceRecords];
+    return d;
 }
 
 @end

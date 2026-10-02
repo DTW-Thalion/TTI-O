@@ -5,6 +5,10 @@
  */
 package global.thalion.ttio.exporters;
 
+import global.thalion.ttio.AcquisitionRun;
+import global.thalion.ttio.ProvenanceRecord;
+import global.thalion.ttio.SpectralDataset;
+import global.thalion.ttio.SpectrumIndex;
 import global.thalion.ttio.importers.ImzMLReader;
 import global.thalion.ttio.importers.ImzMLReader.ImzMLImport;
 import global.thalion.ttio.importers.ImzMLReader.PixelSpectrum;
@@ -22,6 +26,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -229,6 +234,127 @@ public final class ImzMLWriter {
                 imp.gridMaxX(), imp.gridMaxY(), imp.gridMaxZ(),
                 imp.pixelSizeX(), imp.pixelSizeY(),
                 imp.scanPattern(), imp.uuidHex());
+    }
+
+    /**
+     * (M102) First mass-spectrum run of {@code ds} that carries pixel
+     * coordinates ({@link ImzMLReader#pixelCoordinatesOf}: the
+     * {@code spectrum_index/pixel_*} columns, else the legacy
+     * {@code imzml_pixel_coordinates_csv} provenance parameter), in run
+     * order; {@code null} when there is none.
+     */
+    public static AcquisitionRun findPixelRun(SpectralDataset ds) {
+        for (AcquisitionRun run : ds.msRuns().values()) {
+            if (!run.hasChannel("mz") || !run.hasChannel("intensity")) continue;
+            if (ImzMLReader.pixelCoordinatesOf(run, ds.provenanceRecords()) != null) {
+                return run;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * (M102) Write a pixel run — one spectrum per pixel, as the imzML
+     * importer stores a processed-mode file — as an imzML + .ibd pair.
+     *
+     * <p>Pixels are written in spectrum order with the coordinates from
+     * {@link ImzMLReader#pixelCoordinatesOf} and each spectrum's
+     * {@code mz} / {@code intensity} arrays. The mode is {@code mode}
+     * when non-null, else the {@code imzml_mode} provenance parameter,
+     * else {@code "continuous"} when every spectrum's m/z array is
+     * identical and {@code "processed"} otherwise. UUID, grid extents,
+     * pixel size and scan pattern come from the {@code imzml_*}
+     * provenance parameters (run-level first, then
+     * {@code datasetProvenance}) when present, else the defaults of
+     * {@link #write} (random UUID, extents derived from the
+     * coordinates, no pixel size, {@code "flyback"}).</p>
+     *
+     * @param run               the pixel run
+     * @param datasetProvenance dataset-level provenance records (may be {@code null})
+     * @param imzmlPath         destination {@code .imzML}
+     * @param ibdPath           destination {@code .ibd}; {@code null} derives it
+     * @param mode              {@code "continuous"}, {@code "processed"} or {@code null}
+     * @param progress          optional progress sink
+     * @throws IllegalArgumentException when the run has no pixel coordinates
+     */
+    public static WriteResult writeFromRun(AcquisitionRun run,
+                                           List<ProvenanceRecord> datasetProvenance,
+                                           Path imzmlPath, Path ibdPath,
+                                           String mode, ProgressSink progress) {
+        int[][] coords = ImzMLReader.pixelCoordinatesOf(run, datasetProvenance);
+        if (coords == null) {
+            throw new IllegalArgumentException(
+                "run '" + run.name() + "' carries no pixel coordinates");
+        }
+        SpectrumIndex idx = run.spectrumIndex();
+        Map<String, double[]> channels = run.channels();
+        double[] mzAll = channels.get("mz");
+        double[] inAll = channels.get("intensity");
+        if (mzAll == null || inAll == null) {
+            throw new IllegalArgumentException(
+                "run '" + run.name() + "' has no mz/intensity channels");
+        }
+        int n = idx.count();
+        List<PixelSpectrum> pixels = new ArrayList<>(n);
+        boolean sameMz = true;
+        double[] firstMz = null;
+        for (int i = 0; i < n; i++) {
+            int off = (int) idx.offsetAt(i);
+            int len = idx.lengthAt(i);
+            double[] mz = Arrays.copyOfRange(mzAll, off, off + len);
+            double[] in = Arrays.copyOfRange(inAll, off, off + len);
+            if (firstMz == null) firstMz = mz;
+            else if (sameMz && !Arrays.equals(firstMz, mz)) sameMz = false;
+            pixels.add(new PixelSpectrum(coords[i][0], coords[i][1], coords[i][2], mz, in));
+        }
+
+        String effMode = mode;
+        if (effMode == null) {
+            String p = ImzMLReader.imzmlParameter(run, datasetProvenance, ImzMLReader.PARAM_MODE);
+            if ("processed".equals(p)) effMode = p;
+            // A recorded "continuous" holds only while the arrays still
+            // share one m/z axis; otherwise processed is the only
+            // faithful encoding.
+            else if ("continuous".equals(p)) effMode = sameMz ? p : "processed";
+        }
+        if (effMode == null) effMode = sameMz ? "continuous" : "processed";
+
+        String uuid = ImzMLReader.imzmlParameter(run, datasetProvenance, ImzMLReader.PARAM_UUID_HEX);
+        if (uuid != null && normaliseUuid(uuid).length() != 32) uuid = null;
+        int gx = intParam(run, datasetProvenance, ImzMLReader.PARAM_GRID_MAX_X);
+        int gy = intParam(run, datasetProvenance, ImzMLReader.PARAM_GRID_MAX_Y);
+        int gz = intParam(run, datasetProvenance, ImzMLReader.PARAM_GRID_MAX_Z);
+        double psx = doubleParam(run, datasetProvenance, ImzMLReader.PARAM_PIXEL_SIZE_X);
+        double psy = doubleParam(run, datasetProvenance, ImzMLReader.PARAM_PIXEL_SIZE_Y);
+        String scan = ImzMLReader.imzmlParameter(run, datasetProvenance, ImzMLReader.PARAM_SCAN_PATTERN);
+        if (scan == null || scan.isEmpty()) scan = "flyback";
+
+        return write(pixels, imzmlPath, ibdPath, effMode,
+            gx, gy, gz, psx, psy, scan, uuid, progress);
+    }
+
+    private static int intParam(AcquisitionRun run, List<ProvenanceRecord> ds, String key) {
+        String v = ImzMLReader.imzmlParameter(run, ds, key);
+        if (v == null || v.isBlank()) return 0;
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            try {
+                return (int) Double.parseDouble(v.trim());
+            } catch (NumberFormatException e2) {
+                return 0;
+            }
+        }
+    }
+
+    private static double doubleParam(AcquisitionRun run, List<ProvenanceRecord> ds, String key) {
+        String v = ImzMLReader.imzmlParameter(run, ds, key);
+        if (v == null || v.isBlank()) return 0.0;
+        try {
+            return Double.parseDouble(v.trim());
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
     }
 
     // ── helpers ────────────────────────────────────────────────────

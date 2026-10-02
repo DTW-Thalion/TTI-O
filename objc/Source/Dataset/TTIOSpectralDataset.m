@@ -135,6 +135,17 @@ static BOOL datasetRunsHaveActivationDetail(NSDictionary *msRuns)
     return NO;
 }
 
+/** M102: YES when any MS run's spectrum_index carries the pixel_x /
+ *  pixel_y / pixel_z columns; the writer then adds
+ *  opt_pixel_coordinates. */
+static BOOL datasetRunsHavePixelCoordinates(NSDictionary *msRuns)
+{
+    for (TTIOAcquisitionRun *run in [msRuns objectEnumerator]) {
+        if (run.spectrumIndex.hasPixelCoordinates) return YES;
+    }
+    return NO;
+}
+
 
 @implementation TTIOSpectralDataset
 {
@@ -304,6 +315,9 @@ static NSError *makeProviderWriteNotImplementedError(NSString *url) {
     BOOL anyM74 = datasetRunsHaveActivationDetail(_msRuns);
     if (anyM74) {
         [features addObject:[TTIOFeatureFlags featureMS2ActivationDetail]];
+    }
+    if (datasetRunsHavePixelCoordinates(_msRuns)) {
+        [features addObject:[TTIOFeatureFlags featurePixelCoordinates]];
     }
     if (![root setAttributeValue:kTTIOFormatVersion
                          forName:@"ttio_format_version" error:error]) {

@@ -5,6 +5,7 @@
  */
 package global.thalion.ttio.exporters.writers;
 
+import global.thalion.ttio.AcquisitionRun;
 import global.thalion.ttio.Enums;
 import global.thalion.ttio.MSImage;
 import global.thalion.ttio.SpectralDataset;
@@ -25,6 +26,13 @@ import java.util.Map;
  * <p>Mode default {@code "continuous"} matches the GUI {@code ExportConfig}
  * fallback; override via the {@code "mode"} opt.</p>
  *
+ * <p>(M102) A dataset without an MS image is exported from its first
+ * mass-spectrum run that carries pixel coordinates (an imported
+ * processed-mode file's {@code imzml_pixels} run, or an older file's
+ * legacy coordinate parameter) via {@link ImzMLWriter#writeFromRun}; the
+ * mode then defaults to the recorded {@code imzml_mode}, else to what the
+ * m/z arrays allow.</p>
+ *
  * @since 1.7.0
  */
 public final class ImzMLWriterAdapter implements Writer {
@@ -33,13 +41,19 @@ public final class ImzMLWriterAdapter implements Writer {
     public void write(SpectralDataset ds, String layer, Path output,
                       Map<String, Object> opts) throws IOException {
         MSImage img = (MSImage) ds.imageForKind(Enums.ImageKind.MS);
-        if (img == null) {
-            throw new IllegalArgumentException(
-                "dataset has no MS image to export as imzML");
-        }
         // Python: ibd = Path(output).with_suffix(".ibd").
         Path ibd = withSuffixIbd(output);
-        Object modeOpt = opts.get("mode");
+        Object modeOpt = opts != null ? opts.get("mode") : null;
+        if (img == null) {
+            AcquisitionRun pixelRun = ImzMLWriter.findPixelRun(ds);
+            if (pixelRun == null) {
+                throw new IllegalArgumentException(
+                    "dataset has no MS image to export as imzML");
+            }
+            ImzMLWriter.writeFromRun(pixelRun, ds.provenanceRecords(),
+                output, ibd, modeOpt != null ? modeOpt.toString() : null, null);
+            return;
+        }
         String mode = modeOpt != null ? modeOpt.toString() : "continuous";
         // GUI: ImzMLWriter.write(img.toPixelSpectra(), targetPath, ibd, mode,
         //          width, height, 1, pixelSizeX, pixelSizeY, scanPattern,

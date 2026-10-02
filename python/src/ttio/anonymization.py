@@ -209,7 +209,16 @@ def anonymize(
         }
 
         chroms = list(run.chromatograms)
+        # M102: imaging pixels keep their grid positions.
+        keep = np.asarray(kept_indices, dtype=np.int64)
+        pixel_cols = (
+            {"pixel_x": run.index.pixel_x[keep],
+             "pixel_y": run.index.pixel_y[keep],
+             "pixel_z": run.index.pixel_z[keep]}
+            if run.index.has_pixel_coordinates else {}
+        )
         new_runs[run_name] = WrittenRun(
+            **pixel_cols,
             spectrum_class=run.spectrum_class,
             acquisition_mode=int(run.acquisition_mode),
             channel_data=channel_data,

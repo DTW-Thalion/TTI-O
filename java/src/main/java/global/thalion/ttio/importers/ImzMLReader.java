@@ -4,6 +4,11 @@
  */
 package global.thalion.ttio.importers;
 
+import global.thalion.ttio.AcquisitionRun;
+import global.thalion.ttio.Enums;
+import global.thalion.ttio.InstrumentConfig;
+import global.thalion.ttio.ProvenanceRecord;
+import global.thalion.ttio.SpectrumIndex;
 import global.thalion.ttio.io.ProgressSink;
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
@@ -20,8 +25,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.time.Instant;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * imzML + .ibd importer
@@ -71,7 +79,212 @@ public final class ImzMLReader {
         List<PixelSpectrum> spectra,
         String sourceImzML,
         String sourceIbd
-    ) {}
+    ) {
+        /** The imzML provenance record shared by the pixel run and the
+         *  dataset: the scalar {@code imzml_*} parameters (M102 — the
+         *  coordinates themselves live in {@code spectrum_index/pixel_*}),
+         *  software {@code "ttio imzml importer v0.9"}, input refs
+         *  {@code [imzML, ibd]}.
+         *
+         *  @param outputRef recorded as the only output ref when
+         *                   non-null; {@code null} records none. */
+        public ProvenanceRecord provenanceRecord(String outputRef) {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put(PARAM_MODE, mode);
+            params.put(PARAM_UUID_HEX, uuidHex);
+            params.put(PARAM_GRID_MAX_X, Integer.toString(gridMaxX));
+            params.put(PARAM_GRID_MAX_Y, Integer.toString(gridMaxY));
+            params.put(PARAM_GRID_MAX_Z, Integer.toString(gridMaxZ));
+            params.put(PARAM_PIXEL_SIZE_X, Double.toString(pixelSizeX));
+            params.put(PARAM_PIXEL_SIZE_Y, Double.toString(pixelSizeY));
+            params.put(PARAM_SCAN_PATTERN, scanPattern);
+            return new ProvenanceRecord(Instant.now().getEpochSecond(),
+                IMPORTER_SOFTWARE, params,
+                List.of(sourceImzML, sourceIbd),
+                outputRef != null ? List.of(outputRef) : List.of());
+        }
+
+        /** Build the {@code imzml_pixels} run: one mass spectrum per
+         *  pixel in file order, {@code mz} + {@code intensity} channels
+         *  concatenated, retention time 0, MS level 1, polarity unknown,
+         *  no precursor, base peak = the pixel's maximum intensity, and
+         *  the pixel coordinates as {@code spectrum_index/pixel_x/y/z}
+         *  (M102). Mirrors the run built by Python
+         *  {@code ImzMLImport.to_imported_dataset}.
+         *
+         *  @param provenance the run-level provenance record (normally
+         *                    {@link #provenanceRecord(String)}). */
+        public AcquisitionRun toPixelRun(ProvenanceRecord provenance) {
+            int n = spectra.size();
+            if (n == 0) {
+                throw new IllegalStateException(sourceImzML + ": no spectra parsed");
+            }
+            long[] offsets = new long[n];
+            int[] lengths = new int[n];
+            long total = 0;
+            for (int i = 0; i < n; i++) {
+                offsets[i] = total;
+                lengths[i] = spectra.get(i).mz().length;
+                total += lengths[i];
+            }
+            if (total > Integer.MAX_VALUE) {
+                throw new IllegalStateException(
+                    sourceImzML + ": too many peaks for one in-memory run (" + total + ")");
+            }
+            double[] mzBuf = new double[(int) total];
+            double[] itBuf = new double[(int) total];
+            double[] basePeaks = new double[n];
+            int[] px = new int[n], py = new int[n], pz = new int[n];
+            int[] msLevels = new int[n];
+            for (int i = 0; i < n; i++) {
+                PixelSpectrum s = spectra.get(i);
+                System.arraycopy(s.mz(), 0, mzBuf, (int) offsets[i], lengths[i]);
+                System.arraycopy(s.intensity(), 0, itBuf, (int) offsets[i], lengths[i]);
+                double bp = 0.0;
+                if (s.intensity().length > 0) {
+                    bp = Double.NEGATIVE_INFINITY;
+                    for (double v : s.intensity()) if (v > bp) bp = v;
+                }
+                basePeaks[i] = bp;
+                px[i] = s.x();
+                py[i] = s.y();
+                pz[i] = s.z();
+                msLevels[i] = 1;
+            }
+            SpectrumIndex index = new SpectrumIndex(n, offsets, lengths,
+                new double[n], msLevels, new int[n],
+                new double[n], new int[n], basePeaks)
+                .withPixelCoordinates(px, py, pz);
+            Map<String, double[]> channels = new LinkedHashMap<>();
+            channels.put("mz", mzBuf);
+            channels.put("intensity", itBuf);
+            return new AcquisitionRun(PIXEL_RUN_NAME,
+                Enums.AcquisitionMode.MS1_DDA, index,
+                new InstrumentConfig("", "", "", "", "", ""),
+                channels, List.of(),
+                provenance != null ? List.of(provenance) : List.of(),
+                null, 0.0);
+        }
+
+        /** Build the normalized import draft: the {@code imzml_pixels}
+         *  run, title {@code "imzML import: <file name>"}, and the same
+         *  provenance record at run and dataset level. Mirrors Python
+         *  {@code ImzMLImport.to_imported_dataset}.
+         *
+         *  @param outputRef optional output ref for the provenance record. */
+        public ImportedDataset toImportedDataset(String outputRef) {
+            ProvenanceRecord prov = provenanceRecord(outputRef);
+            ImportedDataset d = new ImportedDataset();
+            d.title = "imzML import: " + Path.of(sourceImzML).getFileName();
+            d.runs.add(toPixelRun(prov));
+            d.provenance.add(prov);
+            return d;
+        }
+    }
+
+    /** Name of the run the importer builds from an imzML file's pixels. */
+    public static final String PIXEL_RUN_NAME = "imzml_pixels";
+    /** Provenance {@code software} string of the imzML importer. */
+    public static final String IMPORTER_SOFTWARE = "ttio imzml importer v0.9";
+    /** Provenance parameter keys (format-spec §4b). */
+    public static final String PARAM_MODE = "imzml_mode";
+    public static final String PARAM_UUID_HEX = "imzml_uuid_hex";
+    public static final String PARAM_GRID_MAX_X = "imzml_grid_max_x";
+    public static final String PARAM_GRID_MAX_Y = "imzml_grid_max_y";
+    public static final String PARAM_GRID_MAX_Z = "imzml_grid_max_z";
+    public static final String PARAM_PIXEL_SIZE_X = "imzml_pixel_size_x";
+    public static final String PARAM_PIXEL_SIZE_Y = "imzml_pixel_size_y";
+    public static final String PARAM_SCAN_PATTERN = "imzml_scan_pattern";
+    /** Pre-M102 coordinate parameter ({@code "x,y,z;x,y,z;..."}); read
+     *  for older files only, never written. */
+    public static final String PARAM_LEGACY_COORDINATES_CSV = "imzml_pixel_coordinates_csv";
+
+    /**
+     * (M102) Pixel coordinates of {@code run}'s spectra, or {@code null}
+     * when it has none.
+     *
+     * <p>The run's {@code spectrum_index/pixel_x/y/z} columns win. For a
+     * run without them (files written before M102) the legacy
+     * {@code imzml_pixel_coordinates_csv} provenance parameter is
+     * looked up in the run's own provenance records, then in
+     * {@code datasetProvenance}, and used only when it parses to exactly
+     * one triple per spectrum (format-spec §4b).</p>
+     *
+     * @param run               the run to inspect
+     * @param datasetProvenance the dataset-level provenance records; may be {@code null}
+     * @return an {@code N x 3} array, row {@code i} = {@code {x, y, z}}
+     *         of spectrum {@code i}; or {@code null}
+     */
+    public static int[][] pixelCoordinatesOf(AcquisitionRun run,
+                                             List<ProvenanceRecord> datasetProvenance) {
+        if (run == null || run.spectrumIndex() == null) return null;
+        SpectrumIndex idx = run.spectrumIndex();
+        int n = idx.count();
+        if (idx.hasPixelCoordinates()) {
+            int[][] out = new int[n][];
+            for (int i = 0; i < n; i++) out[i] = idx.pixelCoordinatesAt(i);
+            return out;
+        }
+        int[][] fromRun = legacyCoordinates(run.provenanceRecords(), n);
+        if (fromRun != null) return fromRun;
+        return legacyCoordinates(datasetProvenance, n);
+    }
+
+    /** (M102) Value of the imzML provenance parameter {@code key} for
+     *  {@code run}: the run's own records first, then
+     *  {@code datasetProvenance}; {@code null} when absent. */
+    public static String imzmlParameter(AcquisitionRun run,
+                                        List<ProvenanceRecord> datasetProvenance,
+                                        String key) {
+        if (run != null) {
+            for (ProvenanceRecord r : run.provenanceRecords()) {
+                String v = r.parameters().get(key);
+                if (v != null) return v;
+            }
+        }
+        if (datasetProvenance != null) {
+            for (ProvenanceRecord r : datasetProvenance) {
+                String v = r.parameters().get(key);
+                if (v != null) return v;
+            }
+        }
+        return null;
+    }
+
+    private static int[][] legacyCoordinates(List<ProvenanceRecord> records, int n) {
+        if (records == null) return null;
+        for (ProvenanceRecord r : records) {
+            String csv = r.parameters().get(PARAM_LEGACY_COORDINATES_CSV);
+            if (csv == null) continue;
+            int[][] parsed = parseLegacyCsv(csv, n);
+            if (parsed != null) return parsed;
+        }
+        return null;
+    }
+
+    /** Parse {@code "x,y,z;x,y,z;..."}; {@code null} unless it holds
+     *  exactly {@code n} well-formed triples. */
+    static int[][] parseLegacyCsv(String csv, int n) {
+        String trimmed = csv.trim();
+        if (trimmed.isEmpty()) return n == 0 ? new int[0][] : null;
+        String[] triples = trimmed.split(";", -1);
+        if (triples.length != n) return null;
+        int[][] out = new int[n][];
+        for (int i = 0; i < n; i++) {
+            String[] parts = triples[i].split(",", -1);
+            if (parts.length != 3) return null;
+            try {
+                out[i] = new int[]{
+                    Integer.parseInt(parts[0].trim()),
+                    Integer.parseInt(parts[1].trim()),
+                    Integer.parseInt(parts[2].trim())
+                };
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return out;
+    }
 
     /** One pixel's spatial coordinates plus its m/z + intensity arrays. */
     public record PixelSpectrum(

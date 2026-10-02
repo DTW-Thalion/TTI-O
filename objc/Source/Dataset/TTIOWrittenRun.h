@@ -107,6 +107,20 @@ NS_ASSUME_NONNULL_BEGIN
  *  compatibility. Defaults to an empty array. */
 @property (nonatomic, copy) NSArray<TTIOProvenanceRecord *> *provenanceRecords;
 
+/** M102 imaging-grid positions, each <code>int32_t[count]</code>,
+ *  written as the <code>spectrum_index/pixel_x</code> /
+ *  <code>pixel_y</code> / <code>pixel_z</code> columns (format-spec
+ *  §4b). Set all three or none; default <code>nil</code> (no
+ *  columns, no <code>opt_pixel_coordinates</code> flag). */
+@property (nonatomic, copy, nullable) NSData *pixelX;
+/** See <code>pixelX</code>. */
+@property (nonatomic, copy, nullable) NSData *pixelY;
+/** See <code>pixelX</code>. */
+@property (nonatomic, copy, nullable) NSData *pixelZ;
+
+/** <code>YES</code> when any of the pixel columns is set. */
+@property (nonatomic, readonly) BOOL hasPixelCoordinates;
+
 /**
  * Designated initialiser.
  *

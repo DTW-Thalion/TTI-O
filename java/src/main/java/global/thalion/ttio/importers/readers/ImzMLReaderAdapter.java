@@ -15,17 +15,26 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
-/** {@link Reader} adapter for imzML (continuous mode only). Mirrors the
- *  GUI {@code ImportTask.importImzML}: reads the {@code .imzML} + sibling
- *  {@code .ibd}, projects pixel spectra into a flat intensity cube, and
- *  builds an {@link MSImage} set on {@link ImportedDataset#image}.
+/** {@link Reader} adapter for imzML.
+ *
+ *  <p><b>Continuous mode</b> mirrors the GUI {@code ImportTask.importImzML}:
+ *  reads the {@code .imzML} + sibling {@code .ibd}, projects pixel spectra
+ *  into a flat intensity cube, and builds an {@link MSImage} set on
+ *  {@link ImportedDataset#image}.</p>
+ *
+ *  <p><b>Processed mode</b> (per-pixel m/z axes, which a cube cannot hold)
+ *  imports the pixels as one {@code imzml_pixels} mass-spectrum run,
+ *  exactly as Python {@code ImzMLImport.to_imported_dataset} does: each
+ *  pixel's position goes in the run's {@code spectrum_index/pixel_x/y/z}
+ *  columns (M102, format-spec §4b) and the other imzML scalars in the
+ *  run- and dataset-level provenance records. See
+ *  {@link ImzMLReader.ImzMLImport#toImportedDataset(String)}.</p>
  *
  *  <p>The {@code .ibd} location follows the Python {@code ImzMLReader}:
  *  {@code opts.get("ibd")} if present, else {@code inputs.get(1)} if a
  *  second input was supplied, else {@code null} (auto-located by the
  *  underlying reader via filename rewriting).</p>
- *
- *  <p>Processed-mode files are rejected, exactly as the GUI does.</p> */
+ * */
 public final class ImzMLReaderAdapter implements Reader {
     @Override
     public ImportedDataset read(List<String> inputs, Map<String, Object> opts,
@@ -50,10 +59,8 @@ public final class ImzMLReaderAdapter implements Reader {
                 "imzML import: no pixels parsed from " + imzml);
         }
         if (!"continuous".equals(imp.mode())) {
-            throw new UnsupportedOperationException(
-                "imzML import: processed mode not yet supported; "
-                + "only continuous mode is wired. "
-                + "File reports mode=" + imp.mode() + ".");
+            // M102: processed mode → one pixel run with real coordinates.
+            return imp.toImportedDataset(null);
         }
 
         int width  = imp.gridMaxX();

@@ -943,6 +943,19 @@ public class SpectralDataset implements
         return new FeatureFlags("1.3", withFlag);
     }
 
+    /** M102: {@code true} when any run's {@link SpectrumIndex} carries
+     *  the pixel coordinate columns. */
+    private static boolean anyPixelCoordinates(List<AcquisitionRun> runs) {
+        if (runs == null) return false;
+        for (AcquisitionRun r : runs) {
+            if (r != null && r.spectrumIndex() != null
+                    && r.spectrumIndex().hasPixelCoordinates()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Convenience overload that delegates to the
      *  {@code genomicRuns}-aware variant with an empty genomic list. */
     public static SpectralDataset create(String pathOrUrl, String title,
@@ -1304,6 +1317,17 @@ public class SpectralDataset implements
             java.util.Set<String> withFlags =
                 new java.util.LinkedHashSet<>(featureFlags.features());
             withFlags.add(FeatureFlags.OPT_SAM_TAGS);
+            featureFlags = new FeatureFlags(targetVersion, withFlags);
+        }
+        // M102: opt_pixel_coordinates when any run's spectrum_index
+        // carries the pixel_x/y/z columns (format-spec §4b). Stamped
+        // here, the backend every create path funnels into, so runs
+        // without the columns leave the flag list unchanged.
+        if (anyPixelCoordinates(runs)
+                && !featureFlags.features().contains(FeatureFlags.OPT_PIXEL_COORDINATES)) {
+            java.util.Set<String> withFlags =
+                new java.util.LinkedHashSet<>(featureFlags.features());
+            withFlags.add(FeatureFlags.OPT_PIXEL_COORDINATES);
             featureFlags = new FeatureFlags(targetVersion, withFlags);
         }
 

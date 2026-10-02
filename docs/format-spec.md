@@ -220,6 +220,50 @@ decodes it transparently and files written without it remain
 valid). `@count` (int64) on the `spectrum_index/` group mirrors
 `spectrum_count` for quick access.
 
+### 4b. Pixel coordinates (M102, `opt_pixel_coordinates`)
+
+A run whose spectra are the pixels of an imaging acquisition (the
+imzML importer's `imzml_pixels` run) carries each spectrum's spatial
+position as three more parallel columns:
+
+| Dataset    | Type       | Semantics                                   |
+|------------|------------|---------------------------------------------|
+| `pixel_x`  | int32[N]   | Pixel x position, as the source numbered it |
+| `pixel_y`  | int32[N]   | Pixel y position                            |
+| `pixel_z`  | int32[N]   | Pixel z position; `1` for a 2-D acquisition |
+
+The three columns are present together or not at all; a reader that
+finds only some of them treats the file as malformed. They use the
+chunking and compression of the other `spectrum_index/` columns.
+imzML numbers pixels from 1 (`IMS:1000050` / `IMS:1000051` /
+`IMS:1000052`), and the importers store those numbers unchanged, so
+an export writes back the coordinates it read. Values are
+non-negative; the transport MSImagePixel extension carries the same
+numbers as uint32 (transport-spec §4.3.1).
+
+Writers add the `opt_pixel_coordinates` feature flag when any run
+carries the columns, so files without them stay byte-identical to
+pre-M102 output.
+
+**Older files.** Before M102 the Python imzML importer kept the
+coordinates in a provenance parameter, `imzml_pixel_coordinates_csv`,
+on both the run-level and the dataset-level record: one `x,y,z`
+triple per spectrum in spectrum order, triples joined by `;`. That
+parameter is no longer written. Both provenance levels are mirrored
+into a fixed-length `@provenance_json` attribute, and HDF5 limits an
+attribute to 64 KB, so an import failed once the parameter passed
+that size: from about 9,000 pixels on a 100-pixel-wide grid. A reader that needs coordinates for a run without
+the columns looks for the parameter in the run's provenance records,
+then in the dataset-level records, and uses it only when it lists
+exactly one triple per spectrum.
+
+The other imzML scalars stay in the run- and dataset-level provenance
+parameters as before: `imzml_mode`, `imzml_uuid_hex`,
+`imzml_grid_max_x` / `_y` / `_z`, `imzml_pixel_size_x` / `_y` and
+`imzml_scan_pattern`. An imzML exporter that writes a pixel run reads
+the mode, UUID, grid, pixel size and scan pattern from them when they
+are present.
+
 The **optional compound `headers` dataset** packs all of the above
 into one rank-1 dataset of compound records for external tooling
 readability. Layout:

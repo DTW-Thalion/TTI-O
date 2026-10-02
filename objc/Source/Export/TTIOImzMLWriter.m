@@ -16,6 +16,10 @@
  */
 #import "TTIOImzMLWriter.h"
 #import "Import/TTIOImzMLReader.h"
+#import "Run/TTIOAcquisitionRun.h"
+#import "Spectra/TTIOSpectrum.h"
+#import "Core/TTIOSignalArray.h"
+#import "Dataset/TTIOProvenanceRecord.h"
 #import <openssl/sha.h>
 
 // Mirrors Java ImzMLWriter.PROGRESS_INTERVAL_PIXELS (100).
@@ -444,6 +448,121 @@ static NSError *MakeError(NSInteger code, NSString *fmt, ...) {
     return [[TTIOImzMLWriteResult alloc] initInternal:imzmlPath ibd:ibd
                                                   uuid:uuid mode:mode
                                                nPixels:pixels.count];
+}
+
+#pragma mark - Pixel runs (M102)
+
+/* NSNumber / numeric NSString parameter values. */
+static NSInteger ParamInteger(id v)
+{
+    if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]])
+        return [v integerValue];
+    return 0;
+}
+
+static double ParamDouble(id v)
+{
+    if ([v isKindOfClass:[NSNumber class]] || [v isKindOfClass:[NSString class]])
+        return [v doubleValue];
+    return 0.0;
+}
+
+static NSString *ParamString(id v)
+{
+    if ([v isKindOfClass:[NSString class]] && [(NSString *)v length]) return v;
+    return nil;
+}
+
++ (nullable TTIOImzMLWriteResult *)writeRun:(TTIOAcquisitionRun *)run
+                          datasetProvenance:(nullable NSArray<TTIOProvenanceRecord *> *)datasetProvenance
+                                toImzMLPath:(NSString *)imzmlPath
+                                    ibdPath:(nullable NSString *)ibdPath
+                                      error:(NSError **)error
+{
+    NSData *coords = [TTIOImzMLReader pixelCoordinatesForRun:run
+                                           datasetProvenance:datasetProvenance];
+    if (!coords) {
+        if (error) *error = MakeError(5,
+            @"run '%@' has no pixel coordinates to export as imzML",
+            run.name ?: @"");
+        return nil;
+    }
+
+    // Run records win over dataset records, later records over
+    // earlier (Python write_from_run).
+    NSMutableArray<TTIOProvenanceRecord *> *records = [NSMutableArray array];
+    [records addObjectsFromArray:datasetProvenance ?: @[]];
+    [records addObjectsFromArray:[run provenanceChain] ?: @[]];
+    NSMutableDictionary<NSString *, id> *params = [NSMutableDictionary dictionary];
+    for (TTIOProvenanceRecord *r in [records reverseObjectEnumerator]) {
+        [r.parameters enumerateKeysAndObjectsUsingBlock:^(NSString *k, id v, BOOL *stop) {
+            (void)stop;
+            if ([k hasPrefix:@"imzml_"] && params[k] == nil) params[k] = v;
+        }];
+    }
+
+    const int32_t *xyz = (const int32_t *)coords.bytes;
+    NSUInteger n = coords.length / (3 * sizeof(int32_t));
+    NSMutableArray<TTIOImzMLPixelSpectrum *> *pixels =
+        [NSMutableArray arrayWithCapacity:n];
+    // The pool drains per pixel; a failure's NSError is kept in a
+    // strong local so it outlives the pool.
+    NSError *loopErr = nil;
+    BOOL loopOk = YES;
+    for (NSUInteger i = 0; i < n && loopOk; i++) {
+        @autoreleasepool {
+            NSError *e = nil;
+            TTIOSpectrum *spec = [run spectrumAtIndex:i error:&e];
+            TTIOSignalArray *mzA = spec.signalArrays[@"mz"];
+            TTIOSignalArray *inA = spec.signalArrays[@"intensity"];
+            TTIOImzMLPixelSpectrum *px = nil;
+            if (spec && (!mzA || !inA)) {
+                e = MakeError(6, @"run '%@' spectrum %lu lacks mz/intensity arrays",
+                              run.name ?: @"", (unsigned long)i);
+            } else if (spec) {
+                px = [[TTIOImzMLPixelSpectrum alloc] initWithX:xyz[i * 3]
+                                                             y:xyz[i * 3 + 1]
+                                                             z:xyz[i * 3 + 2]
+                                                       mzArray:[[mzA float64Buffer] copy]
+                                                intensityArray:[[inA float64Buffer] copy]
+                                                         error:&e];
+            }
+            if (px) {
+                [pixels addObject:px];
+            } else {
+                loopErr = e;
+                loopOk = NO;
+            }
+        }
+    }
+    if (!loopOk) {
+        if (error) *error = loopErr;
+        return nil;
+    }
+
+    NSString *mode = ParamString(params[@"imzml_mode"]);
+    if (![mode isEqualToString:@"continuous"] && ![mode isEqualToString:@"processed"]) {
+        BOOL shared = YES;
+        NSData *first = pixels.firstObject.mzArray;
+        for (TTIOImzMLPixelSpectrum *p in pixels) {
+            if (![p.mzArray isEqualToData:first]) { shared = NO; break; }
+        }
+        mode = shared ? @"continuous" : @"processed";
+    }
+
+    return [self writePixels:pixels
+                 toImzMLPath:imzmlPath
+                     ibdPath:ibdPath
+                        mode:mode
+                    gridMaxX:ParamInteger(params[@"imzml_grid_max_x"])
+                    gridMaxY:ParamInteger(params[@"imzml_grid_max_y"])
+                    gridMaxZ:ParamInteger(params[@"imzml_grid_max_z"])
+                  pixelSizeX:ParamDouble(params[@"imzml_pixel_size_x"])
+                  pixelSizeY:ParamDouble(params[@"imzml_pixel_size_y"])
+                 scanPattern:ParamString(params[@"imzml_scan_pattern"]) ?: @"flyback"
+                     uuidHex:ParamString(params[@"imzml_uuid_hex"])
+                    progress:nil
+                       error:error];
 }
 
 + (nullable TTIOImzMLWriteResult *)writeFromImport:(TTIOImzMLImport *)import

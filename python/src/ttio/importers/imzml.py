@@ -16,11 +16,13 @@ Two storage modes are supported by the spec:
   the .ibd; per-pixel intensity arrays follow.
 * **Processed** — every pixel carries its own m/z + intensity arrays.
 
-This importer covers both. It produces one spectrum per pixel; the
-spatial grid (x, y, optionally z) and the ``IMS:1000030`` continuous /
-``IMS:1000031`` processed designation are preserved as a per-run
-:class:`ProvenanceRecord` parameter dict, from which an MSImage cube
-writer can allocate a 3-D ``[height, width, spectral_points]`` dataset.
+This importer covers both. It produces one spectrum per pixel in a run
+named ``imzml_pixels``. Each pixel's (x, y, z) position is stored in
+the run's ``spectrum_index/pixel_x|pixel_y|pixel_z`` columns
+(format-spec §4b, ``opt_pixel_coordinates``); the grid extents, pixel
+size, scan pattern, UUID and the ``IMS:1000030`` continuous /
+``IMS:1000031`` processed designation are kept as ``imzml_*``
+parameters of a :class:`ProvenanceRecord` at run and dataset level.
 
 Cross-language equivalents
 --------------------------
@@ -118,8 +120,8 @@ class ImzMLImport:
     source_ibd: str = ""
 
     # ---------------------------------------------------------------- #
-    # Persistence — one spectrum per pixel, spatial metadata via
-    # provenance.
+    # Persistence — one spectrum per pixel, positions in the
+    # spectrum_index pixel columns, grid metadata via provenance.
     # ---------------------------------------------------------------- #
 
     def to_imported_dataset(
@@ -158,11 +160,9 @@ class ImzMLImport:
             dtype=np.float64,
         )
 
-        # Per-spectrum spatial coordinates fit in retention_times only
-        # awkwardly. Encode them in run-level provenance instead so the
-        # spectrum_index keeps its conventional shape; downstream tools
-        # can recover the grid from the provenance record.
-        coords = [(s.x, s.y, s.z) for s in self.spectra]
+        # M102: pixel positions are spectrum_index columns. They used to
+        # be one "x,y,z;..." provenance parameter, which overflowed the
+        # 64 KB @provenance_json attribute from about 9,000 pixels.
         prov = ProvenanceRecord(
             timestamp_unix=int(time.time()),
             software="ttio imzml importer v0.9",
@@ -175,7 +175,6 @@ class ImzMLImport:
                 "imzml_pixel_size_x": float(self.pixel_size_x),
                 "imzml_pixel_size_y": float(self.pixel_size_y),
                 "imzml_scan_pattern": self.scan_pattern,
-                "imzml_pixel_coordinates_csv": ";".join(f"{x},{y},{z}" for x, y, z in coords),
             },
             input_refs=[self.source_imzml, self.source_ibd],
             output_refs=[str(path)],
@@ -193,6 +192,9 @@ class ImzMLImport:
             precursor_mzs=np.zeros(n, dtype=np.float64),
             precursor_charges=np.zeros(n, dtype=np.int32),
             base_peak_intensities=base_peaks,
+            pixel_x=np.array([s.x for s in self.spectra], dtype=np.int32),
+            pixel_y=np.array([s.y for s in self.spectra], dtype=np.int32),
+            pixel_z=np.array([s.z for s in self.spectra], dtype=np.int32),
             provenance_records=[prov],
         )
         from .imported_dataset import ImportedDataset
@@ -216,6 +218,51 @@ class ImzMLImport:
             isa_investigation_id=isa_investigation_id,
             path=path,
         ).write(path)
+
+
+#: Pre-M102 provenance parameter holding every pixel as "x,y,z;x,y,z;...".
+#: No longer written; read back by :func:`run_pixel_coordinates`.
+LEGACY_COORDINATES_PARAMETER = "imzml_pixel_coordinates_csv"
+
+
+def _parse_legacy_coordinates(value: Any, count: int) -> np.ndarray | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        triples = [tuple(int(v) for v in t.split(",")) for t in value.split(";")]
+    except ValueError:
+        return None
+    if len(triples) != count or any(len(t) != 3 for t in triples):
+        return None
+    return np.asarray(triples, dtype=np.int32).reshape(count, 3)
+
+
+def run_pixel_coordinates(run, dataset_provenance=()) -> np.ndarray | None:
+    """Return the ``(N, 3)`` int32 ``(x, y, z)`` pixel positions of ``run``.
+
+    Reads the M102 ``spectrum_index`` pixel columns. For a run written
+    before M102, falls back to the ``imzml_pixel_coordinates_csv``
+    provenance parameter: the run's own records first, then
+    ``dataset_provenance``. The parameter is used only when it lists
+    exactly one triple per spectrum. Returns ``None`` when the run
+    carries no positions.
+
+    Cross-language equivalents
+    --------------------------
+    Java: ``ImzMLReader.pixelCoordinatesOf`` · Objective-C:
+    ``+[TTIOImzMLReader pixelCoordinatesForRun:datasetProvenance:]``.
+    """
+    index = run.index
+    if index.has_pixel_coordinates:
+        return np.stack([index.pixel_x, index.pixel_y, index.pixel_z],
+                        axis=1).astype(np.int32, copy=False)
+    count = index.count
+    for record in [*run.provenance(), *dataset_provenance]:
+        coords = _parse_legacy_coordinates(
+            record.parameters.get(LEGACY_COORDINATES_PARAMETER), count)
+        if coords is not None:
+            return coords
+    return None
 
 
 # --------------------------------------------------------------------------- #

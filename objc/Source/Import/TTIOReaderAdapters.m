@@ -252,11 +252,12 @@ static NSUInteger _ofrBatchSpectra(NSDictionary<NSString *, id> *opts)
         return nil;
     }
     if (![imp.mode isEqualToString:@"continuous"]) {
-        if (error) *error = _ofrError(3,
-            [NSString stringWithFormat:
-             @"imzML import: processed mode not yet supported; only continuous "
-             @"mode is wired. File reports mode=%@.", imp.mode]);
-        return nil;
+        // M102: processed mode (per-pixel m/z axes) imports as the
+        // imzml_pixels MS run, positions in the spectrum_index pixel
+        // columns — the shape Python's to_imported_dataset produces.
+        return [TTIOImzMLReader importedDatasetFromImport:imp
+                                                    title:nil
+                                                    error:error];
     }
 
     NSInteger width  = imp.gridMaxX;

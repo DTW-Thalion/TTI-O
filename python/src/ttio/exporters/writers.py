@@ -47,11 +47,24 @@ class ImzMLWriter:
 
         from ..enums import ImageKind
         from . import imzml
-        img = ds.image_for_kind(ImageKind.MS)
-        if img is None:
-            raise ValueError("dataset has no MS image to export as imzML")
+        from ..importers.imzml import run_pixel_coordinates
         ibd = Path(output).with_suffix(".ibd")
-        imzml.write(img.to_pixel_spectra(), output, ibd)
+        img = ds.image_for_kind(ImageKind.MS)
+        if img is not None:
+            imzml.write(img.to_pixel_spectra(), output, ibd)
+            return
+        # No cube: an imported pixel run (M102 pixel columns, or the
+        # pre-M102 provenance CSV) exports with its own positions.
+        dataset_provenance = ds.provenance()
+        for name, run in ds.ms_runs.items():
+            if layer and name != layer:
+                continue
+            if run_pixel_coordinates(run, dataset_provenance) is not None:
+                imzml.write_from_run(run, output, ibd,
+                                     dataset_provenance=dataset_provenance)
+                return
+        raise ValueError(
+            "dataset has no MS image or pixel run to export as imzML")
 
 
 class JcampDxWriter:

@@ -189,6 +189,12 @@ consequence.
 |----------------|-----------|-------|-----------|
 | `opt_sam_tags` | optional  | M101  | At least one genomic run carries the SAM optional fields of its reads in a `signal_channels/tags` dataset (SAM_TAGS, codec id 18; format-spec §10.13). Writers add the flag only when a tags dataset is written, so files without tags stay byte-identical to pre-M101 output; readers that ignore the flag read every other channel unchanged and lose only the tags. |
 
+## M102 — imaging pixel coordinates
+
+| Flag                    | Required? | Since | Semantics |
+|-------------------------|-----------|-------|-----------|
+| `opt_pixel_coordinates` | optional  | M102  | At least one run's `spectrum_index/` carries the `pixel_x`, `pixel_y`, `pixel_z` int32 columns: each spectrum's position on an imaging grid (format-spec §4b). Writers add the flag only when a run carries the columns, so other files stay byte-identical to pre-M102 output; readers that ignore the flag read every spectrum unchanged and lose only the positions. Replaces the pre-M102 `imzml_pixel_coordinates_csv` provenance parameter, which readers still accept on older files. |
+
 ## v0.7 storage + crypto surface (non-flag)
 
 Some v0.7 additions are API-level and don't carry a feature flag —

@@ -1822,6 +1822,26 @@ static BOOL writeIndexArrayDS(TTIOHDF5Group *g, NSString *name,
     return [ds writeData:data error:error];
 }
 
+// M102: a TTIOWrittenRun's pixel columns are all-or-none, each
+// int32[spectrum count]. Sets *outAny when the run carries them.
+static BOOL validateWrittenRunPixels(TTIOWrittenRun *run, NSString *name,
+                                     BOOL *outAny, NSError **error)
+{
+    if (![run hasPixelCoordinates]) return YES;
+    NSUInteger n = run.offsets.length / sizeof(int64_t);
+    NSUInteger want = n * sizeof(int32_t);
+    if (!run.pixelX || !run.pixelY || !run.pixelZ ||
+        run.pixelX.length != want || run.pixelY.length != want ||
+        run.pixelZ.length != want) {
+        if (error) *error = TTIOMakeError(TTIOErrorInvalidArgument,
+            @"run '%@': pixelX/pixelY/pixelZ must all be set, each "
+            @"holding %lu int32 values", name, (unsigned long)n);
+        return NO;
+    }
+    if (outAny) *outAny = YES;
+    return YES;
+}
+
 // Task 30: provider-agnostic 1-D index array writer. Mirrors
 // writeIndexArrayDS but speaks the StorageGroup protocol so it works
 // for memory:// / sqlite:// / zarr:// targets. Layout matches the HDF5
@@ -2404,6 +2424,13 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
     if (!writeIndexArrayStorage(idxG, @"base_peak_intensities",
                                  TTIOPrecisionFloat64, run.basePeakIntensities,
                                  compression, error)) return NO;
+    // M102 pixel columns (nil-skipped when the run has none).
+    if (!writeIndexArrayStorage(idxG, @"pixel_x", TTIOPrecisionInt32,
+                                 run.pixelX, compression, error)) return NO;
+    if (!writeIndexArrayStorage(idxG, @"pixel_y", TTIOPrecisionInt32,
+                                 run.pixelY, compression, error)) return NO;
+    if (!writeIndexArrayStorage(idxG, @"pixel_z", TTIOPrecisionInt32,
+                                 run.pixelZ, compression, error)) return NO;
 
     // signal_channels — pre-flattened NSData buffers, written straight
     // through. channel_names attribute is the comma-joined ordered list
@@ -2488,6 +2515,15 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
                 }
                 break;
             }
+        }
+        // M102: opt_pixel_coordinates when any MS run carries the
+        // spectrum_index pixel columns.
+        BOOL anyPixels = NO;
+        for (NSString *rn in msRuns) {
+            if (!validateWrittenRunPixels(msRuns[rn], rn, &anyPixels, error)) return NO;
+        }
+        if (anyPixels) {
+            [features addObject:[TTIOFeatureFlags featurePixelCoordinates]];
         }
         if (![root setAttributeValue:kTTIOFormatVersion
                               forName:@"ttio_format_version" error:error]) return NO;
@@ -3069,6 +3105,12 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
                                                   error:error];
     }
 
+    // M102: validate pixel columns before creating the file.
+    BOOL anyPixels = NO;
+    for (NSString *rn in runs) {
+        if (!validateWrittenRunPixels(runs[rn], rn, &anyPixels, error)) return NO;
+    }
+
     TTIOHDF5Provider *p = [[TTIOHDF5Provider alloc] init];
     if (![p openURL:path mode:TTIOStorageOpenModeCreate error:error]) return NO;
     TTIOHDF5File *f = (TTIOHDF5File *)[p nativeHandle];
@@ -3119,6 +3161,12 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
             }
             break;
         }
+    }
+
+    // M102: opt_pixel_coordinates when any MS run carries the
+    // spectrum_index pixel columns; other files are unchanged.
+    if (anyPixels) {
+        [features addObject:[TTIOFeatureFlags featurePixelCoordinates]];
     }
 
     if (![TTIOFeatureFlags writeFormatVersion:kTTIOFormatVersion
@@ -3228,6 +3276,13 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
                                 TTIOPrecisionInt32, run.precursorCharges, error)) return NO;
         if (!writeIndexArrayDS(idxG, @"base_peak_intensities",
                                 TTIOPrecisionFloat64, run.basePeakIntensities, error)) return NO;
+        // M102 pixel columns (nil-skipped when the run has none).
+        if (!writeIndexArrayDS(idxG, @"pixel_x",
+                                TTIOPrecisionInt32, run.pixelX, error)) return NO;
+        if (!writeIndexArrayDS(idxG, @"pixel_y",
+                                TTIOPrecisionInt32, run.pixelY, error)) return NO;
+        if (!writeIndexArrayDS(idxG, @"pixel_z",
+                                TTIOPrecisionInt32, run.pixelZ, error)) return NO;
 
         // v1.1 writeMinimal intentionally SKIPS the "opt_compound_headers"
         // duplicate spectrum_index/headers compound dataset. That feature

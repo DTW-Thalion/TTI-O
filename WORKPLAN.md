@@ -57,6 +57,48 @@ aligned reads, so they come before new features.
    sequencer-order whole-genome FASTQ, where cross-read redundancy is
    far lower. The read-name tokenizer also loses on shuffled names
    against xz; it is part of item 3.
+6. **Store MS data in the instrument's own representation.** TTI-O
+   stores every peak as float64 m/z, intensity and, for timsTOF, inverse
+   ion mobility. Many instruments measure integers on a grid plus a
+   calibration. The derived floats carry noise-like low bits that no
+   lossless coder removes. Measured 2026-10-01 on representative public
+   runs, with every format holding the same spectra (ThermoRawFileParser
+   `-p`, no peak picking):
+   - **timsTOF diaPASEF** (Ultra 2, PXD083082, 7.5 GB `.d`): TTI-O is an
+     estimated 2.05x larger than the vendor frame data (15.3 GB). This
+     was measured on a 1% frame window, because the Bruker importer
+     materialises the whole run and needs over 30 GB for it.
+   - **Orbitrap, profile data kept:** TTI-O is 1.14x the Thermo RAW on
+     plasma HILIC metabolomics (Exploris 480, MTBLS15210) and 1.08x on
+     plasma DIA (Exploris 480, PXD070072).
+   - **Elsewhere:** 0.90-0.94x the RAW on the other assays, and 2.3-2.7x
+     smaller than zlib mzML on all of them.
+
+   Expected value by instrument:
+   - **TOF instruments generally** (Bruker timsTOF, Sciex, Waters,
+     Agilent): large. Store integer TOF bins, ion counts and mobility
+     scan numbers with the calibration.
+   - **Orbitrap profile spectra:** probably real. Points lie on a
+     regular frequency grid, so the m/z axis is predictable from a
+     start, a spacing and the calibration; code only the gaps.
+   - **Centroided Orbitrap:** little. The m/z values are interpolated
+     peak positions with no grid.
+
+   Losslessness needs a decision: either reproduce the vendor's m/z bit
+   for bit from the stored indices (the vendor's calibration arithmetic
+   exactly), or define the raw indices as the truth and compute m/z on
+   read.
+
+   Phase 0, on the runs already downloaded:
+   - how regular the profile grids are in the Exploris runs;
+   - the integer TOF representation on the timsTOF window;
+   - whether vendor m/z reproduces exactly from indices plus
+     calibration.
+
+   Separately, the Bruker importer must stream frames as the BAM and
+   mzML paths do. A typical modern diaPASEF run cannot be imported on a
+   16 GB machine today, and failing to do so took the WSL VM down
+   twice.
 
 ---
 

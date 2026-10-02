@@ -28,6 +28,12 @@ echo "== HG002 chr22, single k-mer";      ./seqcm_group --group --pos hg002.coll
 echo "== HG002 chr22, single k-mer pairs"; ./seqcm_group --group --pairs < hg002.collp.fq
 echo "== HG002 chr22, chained";           ./seqcm_group --chain --pos hg002.collp.pos < hg002.collp.fq
 echo "== HG002 chr22, chained, w 16";    ./seqcm_group --chain --group-w 16 --pos hg002.collp.pos < hg002.collp.fq
+for opt in "--fill" "--fill --mates" "--fill --mates --scaffold"; do
+  echo "== HG002 chr22, chained $opt"; ./seqcm_group --chain $opt --pos hg002.collp.pos < hg002.collp.fq
+done
+echo "== HG002 chr22, --fill --mates, blocks sorted by position (diagnostic)"
+./seqcm_group --chain --fill --mates --oracle-sort --pos hg002.collp.pos < hg002.collp.fq
+echo "== HG002 chr22, --layout (locality only)"; ./seqcm_group --layout --no-code --pos hg002.collp.pos < hg002.collp.fq
 for f in wes.shuf.fq wes.sorted.fq; do
   echo "== WES chr22 $f"
   ./seqcm_group < $f
@@ -36,4 +42,7 @@ for f in wes.shuf.fq wes.sorted.fq; do
   ./seqcm_group --chain --group-w 32 < $f
   ./seqcm_group --chain < $f
   ./seqcm_group --chain --min-votes 1 < $f
+  ./seqcm_group --chain --fill < $f
+  ./seqcm_group --chain --fill --mates --scaffold < $f
+  ./seqcm_group --layout < $f
 done

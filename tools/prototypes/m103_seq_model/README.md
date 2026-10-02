@@ -192,10 +192,57 @@ end up moved to the end; at w = 13 that is 13%, and the bases come
 within 0.007 bits/base of coordinate order. A window of 8 or 16 gives
 0.501 and 0.505; 3 votes 0.506. Grouping takes 3.6 s.
 
+### Closing the HG002 gap: what was tried
+
+Each option is added on top of `--chain`; HG002 numbers are the bases.
+
+| Option | HG002 bases | HG002 total | WES shuffled bases |
+|---|---|---|---|
+| `--chain` | 0.4069 | 0.4949 | 0.5027 |
+| `--fill`: after each chain read, its unplaced neighbours on even one minimizer within a read length, by offset | 0.3972 | 0.4853 | **0.4967** |
+| `--fill --mates`: seed the next chain from the unplaced mate (paired by read name) of a recent read | 0.3960 | 0.4841 | 0.4967 |
+| `--fill --mates --scaffold`: union-find clustering of chains along overlap and mate links (>= 4), clusters capped at 16 MiB, emitted whole | **0.3928** | **0.4808** | 0.4967 |
+| coordinate order | 0.348 | | 0.496 |
+
+WES is closed: `--fill` reaches coordinate order. HG002 is not. Two
+other attempts lost and stay only as options: `--layout` (a coordinate
+per read from a breadth-first search over confident overlaps, then a
+sort) is exact on simulated reads and 0.5004 on WES, but on HG002 a few
+overlaps through repeats put whole regions into one frame and only 2.2%
+of consecutive reads land within 1 kb; joining chains into paths (at most
+two neighbours each) instead of clusters gave 0.3944. A first `--mates`
+assumed reads 2i and 2i+1 were mates; in this FASTQ that breaks at pair
+733, so mates are paired by name.
+
+Diagnostics (`--oracle-sort`, `--dump-order` and `frag.py`-style
+analysis of the dumped order against mapping positions) say where the
+rest is:
+
+- Order within a block does not matter: sorting each block of the
+  `--fill --mates` order by true position codes 0.3958 against 0.3960.
+  Which reads share a block is everything.
+- In coordinate order a 100 kb bin's reads span 1.11 of the 40 blocks;
+  in every grouped order here, 39.5-40. The grouped order is 1.59 M runs
+  of genome-contiguous reads (median 1 read, 99th percentile 127 reads,
+  none longer than 11.6 kb of genome), and consecutive runs are a median
+  6.8 Mbp apart. A 100 kb bin's ~28,000 reads sit in 1,000-1,900
+  separate stretches of the output.
+- So the local order is good and the long-range order is random. What
+  is missing is which ~10 kb run follows which along the chromosome,
+  across repeats longer than a read: scaffolding. Overlaps cannot bridge
+  those repeats, and mates (fragments of ~500 bp) bridge only the short
+  ones.
+
+Grouping with `--scaffold` takes 238 s, most of it the pass that counts
+links between chains.
+
 ### Open
 
-- Grouping speed: 93.7 s for 10.6 M reads, single-threaded; indexing and
-  the walk can both be split across threads.
+- The HG002 gap (0.393 against 0.348 for the bases): long-range order
+  across repeats, i.e. assembly-grade scaffolding of the ~10 kb runs.
+- Grouping speed: 93.7 s for 10.6 M reads with `--chain`, 238 s with
+  `--scaffold`, single-threaded; indexing, the walk and the link count can
+  all be split across threads.
 - Reads moved to the end and the remaining input-order seeds.
 - When a writer groups: a rule from coverage and read count.
 - The permutation's wire format, and random access by input index (a

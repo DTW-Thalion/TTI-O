@@ -183,6 +183,8 @@ int main(int argc, char **argv) {
     while ((len = getline(&line, &cap, stdin)) > 0) {
         if ((ln++ & 3) != 1) continue;          /* FASTQ: sequence is line 2 of 4 */
         while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) len--;
+        if (block_bases && since_reset >= block_bases) { model_reset(&M); since_reset = 0; n_resets++; }
+        since_reset += (uint64_t)len;
         code_read(&M, line, (size_t)len, 1, &n_bases, &n_other);
         if (rc) {
             if ((size_t)len > rccap) { rccap = (size_t)len * 2; rcbuf = realloc(rcbuf, rccap); }

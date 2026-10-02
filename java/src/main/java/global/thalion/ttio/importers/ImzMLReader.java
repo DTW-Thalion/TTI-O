@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -507,6 +508,13 @@ public final class ImzMLReader {
         private boolean inBinaryArray;
         private boolean inScan;
         private String arrayKind = "";
+        // <referenceableParamGroup id=...> cvParams (accession, value),
+        // applied wherever a <referenceableParamGroupRef ref=...>
+        // appears. Writers commonly declare the array kind / precision /
+        // compression of every binaryDataArray this way (e.g. the
+        // HR2MSI PXD001283 files).
+        private final Map<String, List<String[]>> paramGroups = new HashMap<>();
+        private List<String[]> currentGroup;
 
         @Override
         public void startElement(String uri, String localName,
@@ -524,9 +532,24 @@ public final class ImzMLReader {
                 case "scan":
                     inScan = true;
                     break;
-                case "cvParam":
-                    handleCvParam(attrs);
+                case "referenceableParamGroup":
+                    currentGroup = new ArrayList<>();
+                    paramGroups.put(nonNull(attrs.getValue("id")), currentGroup);
                     break;
+                case "referenceableParamGroupRef":
+                    for (String[] cv : paramGroups.getOrDefault(
+                            nonNull(attrs.getValue("ref")), List.of())) {
+                        handleCv(cv[0], cv[1]);
+                    }
+                    break;
+                case "cvParam": {
+                    String acc = attrs.getValue("accession");
+                    if (acc == null) break;
+                    String value = nonNull(attrs.getValue("value"));
+                    if (currentGroup != null) currentGroup.add(new String[] {acc, value});
+                    handleCv(acc, value);
+                    break;
+                }
                 default:
                     break;
             }
@@ -547,9 +570,16 @@ public final class ImzMLReader {
                 case "scan":
                     inScan = false;
                     break;
+                case "referenceableParamGroup":
+                    currentGroup = null;
+                    break;
                 default:
                     break;
             }
+        }
+
+        private static String nonNull(String s) {
+            return (s == null) ? "" : s;
         }
 
         private static String localName(String localName, String qName) {
@@ -558,12 +588,7 @@ public final class ImzMLReader {
             return (colon >= 0) ? qName.substring(colon + 1) : qName;
         }
 
-        private void handleCvParam(Attributes attrs) {
-            String acc = attrs.getValue("accession");
-            String value = attrs.getValue("value");
-            if (acc == null) return;
-            if (value == null) value = "";
-
+        private void handleCv(String acc, String value) {
             switch (acc) {
                 // imzML storage mode: only the IMS-namespaced forms are
                 // real. MS:1000030 = "vendor processing software",

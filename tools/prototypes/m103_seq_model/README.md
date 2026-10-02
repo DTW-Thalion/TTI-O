@@ -1,0 +1,92 @@
+# M103 Phase 0: a reference-free model for bases
+
+WORKPLAN item 5. Unaligned reads code `sequences` with rANS order-1 at
+about 1.94 bits per base, which loses to xz on FASTQ. This prototype sizes
+a context-model replacement before any codec is built.
+
+`seq_model_proof.c` reads FASTQ on stdin and reports the ideal code length
+(sum of -log2 p) of the A/C/G/T bases under an adaptive model; an arithmetic
+coder reaches that to within a fraction of a percent. Nothing is written.
+
+## Model
+
+- Each base is two binary decisions (high bit, then low bit), so three
+  counters per context.
+- One table per order k: a 16-bit probability with an adaptive rate
+  (1/2, 1/3, ... saturating at 1/61.5). Contexts of 2k bits index the
+  table directly when they fit, otherwise through a Fibonacci hash, with
+  no collision check.
+- With two or three orders, a logistic mixer combines the stretched
+  predictions; weights are selected by node and by the highest count among
+  the orders.
+- `--rc`: after a read is coded, the model also trains on its reverse
+  complement, so a read from the other strand finds its context. The
+  decoder can do the same; it costs time, not bytes.
+- Non-ACGT bases reset the context and are left to an exception list.
+
+## Results
+
+bits/base and the ideal size of the bases alone. TTI-O today is rANS
+order-1 at about 1.94 bits/base.
+
+### NA12878 WES chr22 (992,974 reads, 95.0 M bases), 2^24 tables
+
+`run_wes.sh`. Shuffled approximates sequencer order; sorted is coordinate
+order from the BAM.
+
+| Model | Shuffled | Sorted |
+|---|---|---|
+| TTI-O today (rANS O1) | ~1.94 (23.0 MB) | |
+| xz -9 (whole sequence stream) | 0.70 (8.3 MB) | |
+| order 12 | 0.798 | 0.781 |
+| order 16 | 0.736 | 0.729 |
+| order 20 | 0.797 | 0.790 |
+| order 24 | 0.858 | 0.852 |
+| --rc order 16 | 0.687 | 0.675 |
+| --rc 12 + 20 | 0.571 | 0.552 |
+| --rc 11 + 16 + 24 | **0.558 (6.63 MB)** | 0.544 (6.46 MB) |
+| --rc 12 + 24 | 0.588 | 0.567 |
+
+### HG002 2x250 chr22 (10.6 M reads, 2.64 G bases, ~65x)
+
+`run_hg002.sh`. Reads in samtools-collate order (hashed by name).
+
+| Model | Tables | bits/base | Bases |
+|---|---|---|---|
+| TTI-O today (rANS O1) | | ~1.94 | ~640 MB |
+| --rc 11 + 16 + 24 | 2^24 | 1.122 | 371 MB |
+| --rc 12 + 20 | 2^26 | 0.818 | 270 MB |
+| --rc 11 + 16 + 24 | 2^26 | 0.656 | 217 MB |
+| --rc 11 + 16 + 22 | 2^28 | 0.453 | 150 MB |
+| --rc 11 + 16 + 24 | 2^28 | **0.452** | **149 MB** |
+
+## Findings
+
+1. A mixed order-11/16/24 model with reverse-complement training reaches
+   0.56 bits/base on the exome slice and 0.45 on the 65x chr22 slice:
+   3.5x and 4.3x smaller than today, and below xz on the exome.
+2. Read order barely matters (shuffled vs sorted differ by 2-3%), so the
+   gain does not depend on alignment and needs no read reordering.
+3. Model memory is the main lever on high-coverage data. On HG002 the
+   hashed long orders saturate: 2^24 to 2^26 entries per order cuts 41%,
+   2^26 to 2^28 another 31%. At 2^28 (4-byte counters, about 3.2 GB per
+   hashed order, 6.5 GB in all) the curve is still falling. The table size
+   must be a codec parameter written to the stream, since the decoder
+   needs identical tables, and a writer has to choose it from the run size.
+4. Order 22 vs 24 makes no difference once the tables are large; the third
+   order is worth 0.16 bits/base on HG002 against two orders.
+
+## Open for the codec design
+
+- Counter packing: 12-bit probability + 4-bit state in 2 bytes would
+  halve memory at the same table size; check the cost in bits.
+- Collision handling (check bits per slot) against plain hashing.
+- Table size policy: fixed tiers (2^24 / 2^26 / 2^28) chosen from the
+  base count, recorded in the stream header.
+- Speed: one core does about 3 M bases/s with `--rc` and three orders;
+  the codec needs block-parallel coding, which resets or shares the model.
+  Measure the loss from per-block models.
+- The sequencer-order whole-genome FASTQ measurement the WORKPLAN asks for
+  is still to do (needs a download).
+- Arithmetic coder: `native/src/rc_cram` (CRAM range coder) is the
+  candidate.

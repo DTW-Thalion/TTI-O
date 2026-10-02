@@ -97,6 +97,102 @@ order stored).
 
 At ~1x the reads barely overlap, so little is left to model.
 
+## Grouping reads before blocking
+
+Decision (2026-10-02): unaligned runs reorder their reads so that reads
+from the same place in the genome share a block, and store the
+permutation that restores the input order. The alternative, larger blocks
+for this channel, was rejected.
+
+`native/tools/seq_cm_fastq.c` reorders the whole run before cutting
+64 MiB blocks, codes every block with SEQ_CM (orders 11/16/24, RC,
+automatic table_bits) and checks every round trip. The permutation is
+reported at its ideal size, log2(n!) bits, and as fixed-width indices;
+"total" below uses the ideal size. `run_grouping.sh` reproduces the runs.
+
+- `--group`: sort reads by their canonical minimizer (k = 20, least hash
+  over both strands), then by offset from it. `--pairs` keeps mates
+  together and permutes pairs.
+- `--chain`: overlap layout. Each read is indexed by its (w = 32, k = 20)
+  window minimizers on both strands. From a seed, walk to the unplaced
+  read with the least positive offset, tracking strand and offset, then
+  the same leftwards. A neighbour counts only when 2 minimizers agree on
+  its offset (`--min-votes`), and minimizers shared by over 256 reads are
+  ignored (`--max-occ`). The next chain is seeded from the most recently
+  placed read that still has an unplaced neighbour (a stack: depth-first
+  with backtracking). A read that chains to nothing is moved to the end of
+  the run.
+
+### HG002 2x250 chr22, name-hash (collate) order, 40 blocks
+
+| Order | Bases | + permutation | Total |
+|---|---|---|---|
+| input order | 1.453 | | 1.453 |
+| `--group --pairs` | 0.925 | 0.042 | 0.967 |
+| `--group` | 0.568 | 0.088 | 0.656 |
+| `--chain`, first version (1 vote, next seed from the last 64 reads) | 0.511 | 0.088 | 0.599 |
+| `--chain` (as committed) | **0.407** | 0.088 | **0.495** |
+| coordinate order (needs the alignment) | 0.348 | | 0.348 |
+
+Fixed-width indices cost 0.096 bits/base here (0.503 total). Grouping
+by pairs loses: mates come from opposite ends of a fragment, so keying a
+pair on one mate leaves the other among unrelated reads.
+
+`--chain` as committed: 381,995 chains, 307,158 reads moved to the end
+(2.9%), 58,597 seeds from input order; indexing 60 s, grouping 237.5 s
+in all, peak RSS about 7.3 GB; coding 8.9 / 8.3 MB/s.
+
+### Where the rest of the gap is
+
+`--pos` takes each read's mapping position (used for this diagnostic
+only) and reports how local an order is. "Busiest bins" is the share of a
+block's reads in its 20 busiest 100 kb bins.
+
+| Order | Consecutive reads within 1 kb | 100 kb bins per block | Busiest bins |
+|---|---|---|---|
+| coordinate | 100% | 10.6 | 100% |
+| input order (mates adjacent) | 49.9% | 383 | |
+| `--group` | 76.9% | 383 | 9.8% |
+| `--chain`, 1 vote | 80.4% | 383 | |
+| `--chain` (as committed) | 93.1% | 355 | 26.7% |
+
+The chains are locally sound but the blocks are still far from one region
+at full depth. On simulated error-free reads (3 Mbp, 30x, half reverse
+strand) the same code makes 1 seed from input order and every block is
+local, so the remaining breaks come from repeats and sequencing errors,
+not from the layout itself. Raising `--max-occ` to 1024 cut the
+input-order seeds from 111k to 67k but made blocks less local (busiest
+bins 24.2% against 26.1%), because chains then cross between repeat
+copies.
+
+### WES chr22 (~100 bp reads), 2 blocks
+
+| Order | Bases | + permutation | Total |
+|---|---|---|---|
+| shuffled | 0.624 | | 0.624 |
+| `--group` | 0.556 | 0.193 | 0.749 |
+| `--group --pairs` | 0.598 | 0.091 | 0.689 |
+| `--chain`, first version (1 vote, next seed from the last 64 reads) | 0.514 | 0.193 | 0.707 |
+| `--chain` (as committed) | 0.526 | 0.193 | 0.719 |
+| coordinate order | 0.496 | | 0.496 |
+
+At exome depth the permutation costs more than grouping saves, so a
+writer must choose per run whether to group. The committed `--chain` is
+worse here than the first version: a ~100 bp read carries about 5
+minimizers at w = 32, so 2 agreeing ones are rare and 21% of reads end
+up moved to the end.
+
+### Open
+
+- Grouping speed: 237.5 s for 10.6 M reads, mostly a sort of the
+  candidates at every step.
+- Short reads: the vote threshold or the minimizer density has to follow
+  read length.
+- Reads moved to the end and the remaining input-order seeds.
+- When a writer groups: a rule from coverage and read count.
+- The permutation's wire format, and random access by input index (a
+  fixed-width column keeps a lookup at one block).
+
 ## Findings
 
 1. A mixed order-11/16/24 model with reverse-complement training reaches
@@ -122,7 +218,9 @@ At ~1x the reads barely overlap, so little is left to model.
 - Collision handling (check bits per slot) against plain hashing.
 - Table size policy: fixed tiers (2^24 / 2^26 / 2^28) chosen from the
   base count, recorded in the stream header.
-- Block policy for unaligned runs (see the per-block table above).
+- Block policy for unaligned runs: decided, grouped with a stored
+  permutation (see "Grouping reads before blocking"); the writer's rule
+  for when to group is still open.
 - Arithmetic coder: the kernel uses its own carry-less binary coder
   (docs/codecs/seq_cm.md section 4) rather than `rc_cram`, whose
   multi-symbol interface costs a division per decision.

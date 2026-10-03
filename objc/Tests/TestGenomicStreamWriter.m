@@ -25,6 +25,7 @@
 #import "HDF5/TTIOHDF5File.h"
 #import "HDF5/TTIOHDF5Group.h"
 #import "ValueClasses/TTIOEnums.h"
+#import "Codecs/TTIOSeqCm.h"
 #include <unistd.h>
 
 extern TTIOWrittenGenomicRun *gbM87Run(NSString *region);
@@ -84,7 +85,8 @@ static void gswLayout(void)
          "stream writer: block 1 qualities_off follows block 0 qualities_len");
     PASS([r0[@"qualities_codec"] unsignedIntValue] == TTIOCompressionFqzcompNx16Z
          && [r0[@"cigars_codec"] unsignedIntValue] == TTIOCompressionRansOrder0
-         && [r0[@"sequences_codec"] unsignedIntValue] == TTIOCompressionRansOrder1,
+         && [r0[@"sequences_codec"] unsignedIntValue]
+                == ([TTIOSeqCm nativeAvailable] ? TTIOCompressionSeqCm : TTIOCompressionRansOrder1),
          "stream writer: forced codecs in the index");
     NSDictionary *r3 = rows.count > 3 ? rows[3] : nil;
     PASS([r3[@"qualities_codec"] unsignedIntValue] == TTIOCompressionRansOrder0,

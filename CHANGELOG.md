@@ -12,6 +12,18 @@ public API is stable from onward.
 ## [Unreleased]
 
 ### Added
+- **M103 SEQ_CM, read bases without a reference.** Runs with no
+  reference (FASTQ imports, unaligned reads) now code their bases with
+  SEQ_CM (codec id 19) under `blocks_v1`, instead of rANS order-1: a
+  context-mixing model over 11-, 16- and 24-base contexts with
+  reverse-complement training and a binary arithmetic coder, in one
+  native kernel shared by the three SDKs (Python `ttio.codecs.seq_cm`,
+  Java `codecs.SeqCm`, ObjC `TTIOSeqCm`). On the M103 Phase 0 data the
+  bases take 0.35-0.62 bits each against about 1.94 before. Writers
+  without the native library keep RANS_ORDER1, recorded per block;
+  SEQ_CM is also accepted as a `sequences` override on the
+  whole-channel layout. Readers that predate it reject codec id 19 by
+  name (binding decision §104; `docs/codecs/seq_cm.md`).
 - **M102 imzML pixel coordinates.** Large imaging imports no longer
   fail. The Python imzML importer stored every pixel's position in one
   provenance parameter, `imzml_pixel_coordinates_csv`, which both

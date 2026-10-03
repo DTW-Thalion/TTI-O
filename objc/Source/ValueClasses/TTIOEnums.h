@@ -73,7 +73,8 @@ typedef NS_ENUM(NSUInteger, TTIOCompression) {
     TTIOCompressionNameTokenizedV2 = 15,  // CRAM-style adaptive name-tokenizer v2.
     TTIOCompressionZstd = 16,             // Zstandard (RFC 8878); wire-only today.
     TTIOCompressionFloatDeltaZstd = 17,   // Lossless float64 channels: none/delta + transpose + zstd.
-    TTIOCompressionSamTags = 18           // M101: SAM optional fields (docs/codecs/sam_tags.md).
+    TTIOCompressionSamTags = 18,          // M101: SAM optional fields (docs/codecs/sam_tags.md).
+    TTIOCompressionSeqCm = 19             // M103: read bases without a reference (docs/codecs/seq_cm.md).
 };
 
 /**

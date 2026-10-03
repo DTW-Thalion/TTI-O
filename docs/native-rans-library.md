@@ -46,7 +46,8 @@ work without it.
 
 The listing below covers the rANS kernel family. The same header also
 declares the v2 codec entry points (`ttio_ref_diff_v2_*`,
-`ttio_mate_info_v2_*`, `ttio_name_tok_v2_*`), the M94.Z qualities
+`ttio_mate_info_v2_*`, `ttio_name_tok_v2_*`), the M101 and M103 codecs
+(`ttio_sam_tags_*`, `ttio_seq_cm_*`), the M94.Z qualities
 family (`ttio_m94z_v4_*`, `ttio_m94z_qual_*`, and the V6
 segment/thread tuning setters), and the engine probes
 (`ttio_engine_active_name`, `ttio_engine_gpu_available`); their

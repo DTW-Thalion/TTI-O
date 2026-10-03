@@ -12,6 +12,7 @@
 #import "Codecs/TTIONameTokenizerV2.h"
 #import "Codecs/TTIORefDiffV2.h"
 #import "Codecs/TTIOSamTags.h"
+#import "Codecs/TTIOSeqCm.h"
 #import <pthread.h>
 
 static NSError *_TTIOCodecError(NSString *msg) {
@@ -334,6 +335,29 @@ static pthread_once_t gOnce = PTHREAD_ONCE_INIT;
 }
 @end
 
+// ── seq_cm (codec 19, M103): context-aware, the read lengths ────────
+@interface _TTIOSeqCmCodec : NSObject <TTIOCodec> @end
+@implementation _TTIOSeqCmCodec
+static NSData *_scmLengths(TTIOCodecContext *ctx) {
+    NSUInteger n = ctx.readLengths.count;
+    NSMutableData *d = [NSMutableData dataWithLength:n * sizeof(uint64_t)];
+    uint64_t *o = (uint64_t *)[d mutableBytes];
+    for (NSUInteger i = 0; i < n; i++) o[i] = (uint64_t)[ctx.readLengths[i] unsignedLongLongValue];
+    return d;
+}
+- (TTIOCompression)codecId { return TTIOCompressionSeqCm; }
+- (BOOL)isContextAware { return YES; }
+- (BOOL)needsEmbeddedReference { return NO; }
+- (TTIODecodedChannel *)decode:(TTIOChannelPayload *)p context:(TTIOCodecContext *)ctx error:(NSError **)e {
+    NSData *out = [TTIOSeqCm decodeData:((TTIOBytesPayload *)p).bytes lengths:_scmLengths(ctx) error:e];
+    return out ? [[TTIODecodedBytes alloc] initWithData:out] : nil;
+}
+- (TTIOEncodedChannel *)encode:(TTIODecodedChannel *)v context:(TTIOCodecContext *)ctx error:(NSError **)e {
+    NSData *out = [TTIOSeqCm encodeSequences:((TTIODecodedBytes *)v).data lengths:_scmLengths(ctx) error:e];
+    return out ? [[TTIOEncodedDatasetBytes alloc] initWithBytes:out] : nil;
+}
+@end
+
 static void _buildRegistry(void) {
     gRegistry = @{
         @(TTIOCompressionRansOrder0): [[_TTIORansCodec alloc] initWithId:TTIOCompressionRansOrder0 order:0],
@@ -346,6 +370,7 @@ static void _buildRegistry(void) {
         @(TTIOCompressionMateInlineV2):    [[_TTIOMateInfoCodec alloc] init],
         @(TTIOCompressionRefDiffV2):       [[_TTIORefDiffCodec alloc] init],
         @(TTIOCompressionSamTags):         [[_TTIOSamTagsCodec alloc] init],
+        @(TTIOCompressionSeqCm):           [[_TTIOSeqCmCodec alloc] init],
     };
 }
 

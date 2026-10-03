@@ -31,7 +31,9 @@ def _build_minimal_run(**extra):
     """Build a minimal WrittenGenomicRun with N=100 records and Illumina-style names."""
     from ttio.written_genomic_run import WrittenGenomicRun
 
-    seq = (b"ACGT" * (READ_LEN // 4)) * N
+    # READ_LEN bases per read: lengths must agree with the bases now that
+    # sequences without a reference code per read (SEQ_CM, M103).
+    seq = (b"ACGT" * (READ_LEN // 4 + 1))[:READ_LEN] * N
     qual = bytes([30] * TOTAL_BASES)
     names = [f"INSTR:RUN:1:{i // 4}:{i % 4}:{i * 100}" for i in range(N)]
 

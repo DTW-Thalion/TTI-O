@@ -111,6 +111,7 @@ extern void testM98AssemblyGraph(void);
 extern void testM99BlocksV1PerAU(void);
 extern void testM101SamTags(void);
 extern void testM102PixelCoordinates(void);
+extern void testM103SeqCm(void);
 extern void testNameTokenizerV2(void);
 extern void testNameTokenizedV2Dispatch(void);
 extern void testOffsetsCumsum(void);
@@ -608,6 +609,10 @@ int main(int argc, const char *argv[])
         START_SET("M102: imzML pixel coordinates")
             testM102PixelCoordinates();
         END_SET("M102: imzML pixel coordinates")
+
+        START_SET("M103: SEQ_CM read bases without a reference")
+            testM103SeqCm();
+        END_SET("M103: SEQ_CM read bases without a reference")
 
         START_SET("name_tok v2 codec round-trip + invalid-input")
             testNameTokenizerV2();

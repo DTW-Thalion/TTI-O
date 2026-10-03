@@ -144,11 +144,14 @@ def encode_block(block: WrittenGenomicRun,
             overrides["qualities"] = Compression.RANS_ORDER0
         else:
             overrides["qualities"] = Compression.FQZCOMP_NX16_Z
-    # Sequences without a reference: RANS_ORDER1 instead of raw bytes.
-    # With a reference the REF_DIFF_V2 default applies; unmapped reads
-    # inside a mapped block are carried by the codec (UL substream).
+    # Sequences without a reference: SEQ_CM (M103), or RANS_ORDER1 when
+    # libttio_rans is not loaded. With a reference the REF_DIFF_V2
+    # default applies; unmapped reads inside a mapped block are carried
+    # by the codec (UL substream).
     if "sequences" not in overrides and block.reference_chrom_seqs is None:
-        overrides["sequences"] = Compression.RANS_ORDER1
+        from ..codecs import seq_cm
+        overrides["sequences"] = (Compression.SEQ_CM if seq_cm.HAVE_NATIVE_LIB
+                                  else Compression.RANS_ORDER1)
     if overrides != block.signal_codec_overrides:
         block = dataclasses.replace(block, signal_codec_overrides=overrides)
     root = MemoryProvider.open("memory://ttio-block-encode", mode="w").root_group()

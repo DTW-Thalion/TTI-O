@@ -74,7 +74,9 @@ public final class SpectralDatasetGenomicWriter {
                 "sequences", java.util.Set.of(
                     Enums.Compression.RANS_ORDER0,
                     Enums.Compression.RANS_ORDER1,
-                    Enums.Compression.BASE_PACK),
+                    Enums.Compression.BASE_PACK,
+                    // M103: context-aware (the read lengths).
+                    Enums.Compression.SEQ_CM),
                 "qualities", java.util.Set.of(
                     Enums.Compression.RANS_ORDER0,
                     Enums.Compression.RANS_ORDER1,
@@ -290,6 +292,14 @@ public final class SpectralDatasetGenomicWriter {
                     writeBulkSequencesRefDiff(sc, bulkBlobs.refDiffBlob());
                 } else if (useRefDiffPath) {
                     writeSequencesRefDiff(sc, run, ctx.referenceMd5());
+                } else if (seqCodec == Enums.Compression.SEQ_CM) {
+                    // M103: SEQ_CM takes the read lengths.
+                    int[] readLengths = new int[run.readCount()];
+                    for (int i = 0; i < readLengths.length; i++) readLengths[i] = run.lengths()[i];
+                    writeByteChannelWithCodec(sc, "sequences",
+                        run.sequences(), run.signalCompression(), seqCodec,
+                        global.thalion.ttio.codecs.registry.CodecContext.builder()
+                            .readLengths(readLengths).build());
                 } else {
                     writeByteChannelWithCodec(sc, "sequences",
                         run.sequences(), run.signalCompression(),
@@ -1151,6 +1161,18 @@ public final class SpectralDatasetGenomicWriter {
             String name, byte[] data,
             Enums.Compression defaultCodec,
             Enums.Compression codecOverride) {
+        writeByteChannelWithCodec(sc, name, data, defaultCodec, codecOverride,
+            global.thalion.ttio.codecs.registry.CodecContext.empty());
+    }
+
+    /** As above, with the codec context a context-aware codec needs
+     *  (SEQ_CM: the read lengths). */
+    static void writeByteChannelWithCodec(
+            global.thalion.ttio.providers.StorageGroup sc,
+            String name, byte[] data,
+            Enums.Compression defaultCodec,
+            Enums.Compression codecOverride,
+            global.thalion.ttio.codecs.registry.CodecContext codecContext) {
         if (codecOverride == null) {
             writeSignalChannel(sc, name, Enums.Precision.UINT8, data, defaultCodec);
             return;
@@ -1162,7 +1184,7 @@ public final class SpectralDatasetGenomicWriter {
         }
         byte[] encoded = ((global.thalion.ttio.codecs.registry.EncodedChannel.DatasetBytes)
             codec.encode(new global.thalion.ttio.codecs.registry.DecodedChannel.Bytes(data),
-                global.thalion.ttio.codecs.registry.CodecContext.empty())).bytes();
+                codecContext)).bytes();
         // Unfiltered uint8 dataset; codec output already entropy-coded.
         // Force a chunked layout (chunkSize > 0) so HDF5 honours our
         // explicit Compression.NONE choice rather than the legacy

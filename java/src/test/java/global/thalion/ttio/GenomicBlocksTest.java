@@ -107,14 +107,17 @@ class GenomicBlocksTest {
         assertEquals(stop, blobs.nReads());
         assertEquals(Enums.Compression.RANS_ORDER0.ordinal(), blobs.codecs().get("cigars"));
         assertEquals(Enums.Compression.FQZCOMP_NX16_Z.ordinal(), blobs.codecs().get("qualities"));
-        assertEquals(Enums.Compression.RANS_ORDER1.ordinal(), blobs.codecs().get("sequences"));
+        // No reference: SEQ_CM when the native library loaded (M103), else RANS_ORDER1.
+        Enums.Compression expSeq = global.thalion.ttio.codecs.SeqCm.isAvailable()
+            ? Enums.Compression.SEQ_CM : Enums.Compression.RANS_ORDER1;
+        assertEquals(expSeq.ordinal(), blobs.codecs().get("sequences"));
         assertEquals(Enums.Compression.NAME_TOKENIZED_V2.ordinal(), blobs.codecs().get("read_names"));
         assertEquals(Enums.Compression.MATE_INLINE_V2.ordinal(), blobs.codecs().get("mate_info"));
 
         Map<String, Enums.Compression> ov = new LinkedHashMap<>();
         ov.put("cigars", Enums.Compression.RANS_ORDER0);
         ov.put("qualities", Enums.Compression.FQZCOMP_NX16_Z);
-        ov.put("sequences", Enums.Compression.RANS_ORDER1);
+        ov.put("sequences", expSeq);
         WrittenGenomicRun same = block.withSignalCodecOverrides(ov);
         StorageGroup root = memRoot("memory://gb-cmp");
         SpectralDatasetGenomicWriter.writeGenomicRunSubtree(root, "r", same, GenomicWriteContext.none());

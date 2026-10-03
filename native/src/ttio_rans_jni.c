@@ -1385,3 +1385,90 @@ Java_global_thalion_ttio_codecs_TtioRansNative_decodeSamTagsNative(
     free(off);
     return result;
 }
+
+/* ── SEQ_CM (codec id 19, M103) ─────────────────────────────────────
+ * Read bases without a reference. lengths is one long per read (the
+ * kernel's uint64 lengths); the default parameters only. */
+
+static void seq_cm_throw(JNIEnv *env, const char *what, int rc) {
+    char msg[160];
+    snprintf(msg, sizeof(msg), "seq_cm %s failed: rc=%d%s", what, rc,
+             rc == TTIO_RANS_ERR_PARAM
+                 ? " (lengths that do not match the bases or the blob)"
+             : rc == TTIO_RANS_ERR_CORRUPT ? " (corrupt SEQ_CM blob)" : "");
+    const char *cls = rc == TTIO_RANS_ERR_ALLOC ? "java/lang/OutOfMemoryError"
+                                                : "java/lang/IllegalArgumentException";
+    (*env)->ThrowNew(env, (*env)->FindClass(env, cls), msg);
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_global_thalion_ttio_codecs_TtioRansNative_encodeSeqCmNative(
+    JNIEnv *env, jclass cls, jbyteArray seq_arr, jlongArray lengths_arr)
+{
+    (void)cls;
+    jsize n_seq = (*env)->GetArrayLength(env, seq_arr);
+    jsize n_reads = (*env)->GetArrayLength(env, lengths_arr);
+    jbyte *seq = (*env)->GetByteArrayElements(env, seq_arr, NULL);
+    jlong *lens = (*env)->GetLongArrayElements(env, lengths_arr, NULL);
+    uint64_t total = 0;
+    int rc = 0;
+    for (jsize i = 0; i < n_reads; i++) {
+        if (lens[i] < 0) { rc = TTIO_RANS_ERR_PARAM; break; }
+        total += (uint64_t)lens[i];
+    }
+    if (!rc && total != (uint64_t)n_seq) rc = TTIO_RANS_ERR_PARAM;
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    static const uint8_t empty = 0;
+    static const uint64_t no_len = 0;
+    if (!rc)
+        rc = ttio_seq_cm_encode(n_seq ? (const uint8_t *)seq : &empty,
+                                n_reads ? (const uint64_t *)lens : &no_len,
+                                (uint64_t)n_reads, NULL, &out, &out_len);
+    (*env)->ReleaseByteArrayElements(env, seq_arr, seq, JNI_ABORT);
+    (*env)->ReleaseLongArrayElements(env, lengths_arr, lens, JNI_ABORT);
+    if (rc != 0) {
+        seq_cm_throw(env, "encode", rc);
+        return NULL;
+    }
+    jbyteArray result = (*env)->NewByteArray(env, (jsize)out_len);
+    if (result && out_len) (*env)->SetByteArrayRegion(env, result, 0, (jsize)out_len, (const jbyte *)out);
+    ttio_seq_cm_free(out);
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_global_thalion_ttio_codecs_TtioRansNative_decodeSeqCmNative(
+    JNIEnv *env, jclass cls, jbyteArray encoded_arr, jlongArray lengths_arr)
+{
+    (void)cls;
+    jsize enc_len = (*env)->GetArrayLength(env, encoded_arr);
+    jsize n_reads = (*env)->GetArrayLength(env, lengths_arr);
+    jbyte *enc = (*env)->GetByteArrayElements(env, encoded_arr, NULL);
+    jlong *lens = (*env)->GetLongArrayElements(env, lengths_arr, NULL);
+    int rc = 0;
+    for (jsize i = 0; i < n_reads; i++) if (lens[i] < 0) { rc = TTIO_RANS_ERR_PARAM; break; }
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    static const uint8_t empty = 0;
+    static const uint64_t no_len = 0;
+    if (!rc)
+        rc = ttio_seq_cm_decode(enc_len ? (const uint8_t *)enc : &empty, (size_t)enc_len,
+                                n_reads ? (const uint64_t *)lens : &no_len,
+                                (uint64_t)n_reads, &out, &out_len);
+    (*env)->ReleaseByteArrayElements(env, encoded_arr, enc, JNI_ABORT);
+    (*env)->ReleaseLongArrayElements(env, lengths_arr, lens, JNI_ABORT);
+    if (rc != 0) {
+        seq_cm_throw(env, "decode", rc);
+        return NULL;
+    }
+    if (out_len > (size_t)0x7fffffff) {
+        ttio_seq_cm_free(out);
+        seq_cm_throw(env, "decode", TTIO_RANS_ERR_ALLOC);
+        return NULL;
+    }
+    jbyteArray result = (*env)->NewByteArray(env, (jsize)out_len);
+    if (result && out_len) (*env)->SetByteArrayRegion(env, result, 0, (jsize)out_len, (const jbyte *)out);
+    ttio_seq_cm_free(out);
+    return result;
+}

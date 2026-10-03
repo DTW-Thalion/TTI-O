@@ -291,7 +291,8 @@ Key facts for `blocks_v1`, verified against the writer:
   the block index; the `@compression` attribute on a channel dataset
   carries the first block's codec and is informative only. Defaults
   when the caller sets no override: `sequences` → REF_DIFF_V2 (14)
-  with a reference, RANS_ORDER1 (5) without; `qualities` →
+  with a reference, SEQ_CM (19) without (RANS_ORDER1 (5) when the
+  native library is not loaded); `qualities` →
   FQZCOMP_NX16_Z (12), unconditionally; `read_names` →
   NAME_TOKENIZED_V2 (15); `cigars` → RANS_ORDER0 (4); `mate_info` →
   MATE_INLINE_V2 (13).
@@ -420,7 +421,7 @@ byte-exact across the Python / Objective-C / Java SDKs.
 
 | Channel       | Default codec / id                                            | Override surface                          | Codec doc |
 |---------------|---------------------------------------------------------------|-------------------------------------------|-----------|
-| `sequences`   | REF_DIFF_V2 (14) with a reference; RANS_ORDER1 (5) without under `blocks_v1`, BASE_PACK (6) under whole-channel | RANS_ORDER0 (4) / RANS_ORDER1 (5) / BASE_PACK (6) | [`codecs/ref_diff_v2.md`](codecs/ref_diff_v2.md) |
+| `sequences`   | REF_DIFF_V2 (14) with a reference; SEQ_CM (19) without under `blocks_v1` (RANS_ORDER1 (5) without the native library), BASE_PACK (6) under whole-channel | RANS_ORDER0 (4) / RANS_ORDER1 (5) / BASE_PACK (6) / SEQ_CM (19) | [`codecs/ref_diff_v2.md`](codecs/ref_diff_v2.md), [`codecs/seq_cm.md`](codecs/seq_cm.md) |
 | `qualities`   | FQZCOMP_NX16_Z (12)             | RANS_ORDER0 / RANS_ORDER1 / BASE_PACK / QUALITY_BINNED (7) / FQZCOMP_NX16_Z | [`codecs/fqzcomp_nx16_z.md`](codecs/fqzcomp_nx16_z.md) |
 | `read_names`  | NAME_TOKENIZED_V2 (15)          | none (auto-only)                          | [`codecs/name_tokenizer_v2.md`](codecs/name_tokenizer_v2.md) |
 | `cigars`      | RANS_ORDER0 (4) under `blocks_v1`; compound VL_STRING (uncoded) under whole-channel | RANS_ORDER0 / RANS_ORDER1                 | [`codecs/rans.md`](codecs/rans.md) |

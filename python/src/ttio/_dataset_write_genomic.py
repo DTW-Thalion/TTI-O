@@ -325,6 +325,33 @@ def _write_sequences_ref_diff_v2(sc, run: WrittenGenomicRun) -> None:
 SAM_REVERSE_FLAG = 16
 
 
+def _write_sequences_seq_cm(sc, run: WrittenGenomicRun) -> None:
+    """Write the ``sequences`` channel through SEQ_CM (codec id 19, M103).
+
+    Context-aware like FQZCOMP_NX16_Z: the encoder takes the read
+    lengths, which the run stores in genomic_index, so the registry is
+    given a CodecContext carrying them.
+    """
+    from .codecs._registry import CODEC_REGISTRY
+    from .codecs._context import CodecContext, DecodedChannel
+    from .enums import Compression as _Compression, Precision as _Precision
+
+    encoded = CODEC_REGISTRY[_Compression.SEQ_CM].encode(
+        DecodedChannel.of_bytes(bytes(np.asarray(run.sequences, dtype=np.uint8).tobytes())),
+        CodecContext(read_lengths=np.asarray(run.lengths, dtype=np.uint64)),
+    ).dataset_bytes
+    arr = np.frombuffer(encoded, dtype=np.uint8)
+    ds = sc.create_dataset(
+        "sequences",
+        _Precision.UINT8,
+        length=int(arr.shape[0]),
+        chunk_size=io.DEFAULT_SIGNAL_CHUNK,
+        compression=_Compression.NONE,
+    )
+    ds.write(arr)
+    io.write_int_attr(ds, "compression", int(_Compression.SEQ_CM), dtype="<u1")
+
+
 def _write_qualities_fqzcomp_nx16_z(sc, run: WrittenGenomicRun,
                                     qual_strategy_hint: int = -1) -> None:
     """Write the ``qualities`` channel through the FQZCOMP_NX16_Z codec.
@@ -421,6 +448,9 @@ def _write_genomic_run(parent, name: str, run: WrittenGenomicRun,
             _Compression.RANS_ORDER0,
             _Compression.RANS_ORDER1,
             _Compression.BASE_PACK,
+            # M103: context-aware (the read lengths), written by
+            # _write_sequences_seq_cm.
+            _Compression.SEQ_CM,
         }),
         "qualities": frozenset({
             _Compression.RANS_ORDER0,
@@ -515,7 +545,7 @@ def _write_genomic_run(parent, name: str, run: WrittenGenomicRun,
                     "ACGT sequence bytes would silently destroy the "
                     "sequence via Phred-bin quantisation. Use the "
                     "'qualities' channel for QUALITY_BINNED, or "
-                    "RANS_ORDER0/RANS_ORDER1/BASE_PACK on sequences."
+                    "RANS_ORDER0/RANS_ORDER1/BASE_PACK/SEQ_CM on sequences."
                 )
             # Phase C Binding Decisions §120, §121: explicit messages
             # for the wrong-content codecs on the cigars channel. The
@@ -688,6 +718,12 @@ def _write_genomic_run(parent, name: str, run: WrittenGenomicRun,
         and _Compression(_seq_codec) == _Compression.REF_DIFF_V2
     ):
         _write_sequences_ref_diff_v2(sc, run)
+    elif (
+        _seq_codec is not None
+        and _is_valid_compression(_seq_codec)
+        and _Compression(_seq_codec) == _Compression.SEQ_CM
+    ):
+        _write_sequences_seq_cm(sc, run)
     else:
         io._write_byte_channel_with_codec(
             sc, "sequences", run.sequences, run.signal_compression,

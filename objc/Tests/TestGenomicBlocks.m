@@ -20,6 +20,7 @@
 #import "Providers/TTIOStorageProtocols.h"
 #import "ValueClasses/TTIOEnums.h"
 #import "Codecs/TTIOFqzcompNx16Z.h"
+#import "Codecs/TTIOSeqCm.h"
 #include <unistd.h>
 
 static NSString *gbBamPath(void)
@@ -174,9 +175,12 @@ static void gbEncodeBlock(void)
     PASS(bb.nReads == run.readCount && bb.nBases == run.sequencesData.length,
          "genomic blocks: block counts %lu reads %llu bases",
          (unsigned long)bb.nReads, (unsigned long long)bb.nBases);
+    // No reference: SEQ_CM when libttio_rans is linked (M103), else RANS_ORDER1.
+    TTIOCompression expSeq = [TTIOSeqCm nativeAvailable] ? TTIOCompressionSeqCm
+                                                         : TTIOCompressionRansOrder1;
     PASS([bb.codecs[@"qualities"] integerValue] == TTIOCompressionFqzcompNx16Z
          && [bb.codecs[@"cigars"] integerValue] == TTIOCompressionRansOrder0
-         && [bb.codecs[@"sequences"] integerValue] == TTIOCompressionRansOrder1,
+         && [bb.codecs[@"sequences"] integerValue] == (NSInteger)expSeq,
          "genomic blocks: forced codecs (q=%ld c=%ld s=%ld)",
          (long)[bb.codecs[@"qualities"] integerValue], (long)[bb.codecs[@"cigars"] integerValue],
          (long)[bb.codecs[@"sequences"] integerValue]);
@@ -189,7 +193,7 @@ static void gbEncodeBlock(void)
     TTIOWrittenGenomicRun *same = [run copyWithSignalCodecOverrides:@{
         @"qualities": @(TTIOCompressionFqzcompNx16Z),
         @"cigars": @(TTIOCompressionRansOrder0),
-        @"sequences": @(TTIOCompressionRansOrder1)}];
+        @"sequences": @(expSeq)}];
     BOOL ok = [TTIOSpectralDataset writeGenomicRunStorage:same toGroup:root name:@"r"
                                                   context:[TTIOGenomicWriteContext none] error:&err];
     PASS(ok, "genomic blocks: reference storage-path write");

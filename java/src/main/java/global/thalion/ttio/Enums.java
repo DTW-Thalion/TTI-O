@@ -174,7 +174,16 @@ public final class Enums {
          * {@code Compression.SAM_TAGS} and ObjC
          * {@code TTIOCompressionSamTags}.
          */
-        SAM_TAGS
+        SAM_TAGS,
+        /**
+         * M103: read bases without a reference, a context-mixing model
+         * plus a binary arithmetic coder; decode takes the read lengths.
+         * The blocks_v1 sequences default when there is no reference
+         * (docs/codecs/seq_cm.md). Cross-language ordinal {@code = 19}
+         * matches Python {@code Compression.SEQ_CM} and ObjC
+         * {@code TTIOCompressionSeqCm}.
+         */
+        SEQ_CM
     }
 
     /** Ion polarity for mass spectrometry. */

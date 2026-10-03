@@ -938,6 +938,7 @@ HDF5 filter pipeline (codec ids 1–3) or a dedicated per-channel
 | 17 | FLOAT_DELTA_ZSTD       | Lossless float64 channel codec: per block of 2^20 values, none/delta on the uint64 bit view (chosen by exact size comparison), byte-plane transpose, one zstd frame. Magic `FDZ1`. Values round-trip bit-exactly (NaN payloads, signed zeros, Inf). The default for float64 channels of `TTIOMassSpectrum` runs (writers opt out via `opt_disable_float_delta` / `optDisableFloatDelta`); other spectral classes opt in via `signal_compression="float_delta_zstd"`. The dataset becomes a flat uint8 stream with `@compression = 17` and no HDF5 filter. Encoders MAY differ byte-wise across languages (zstd builds differ); decoders MUST accept any conforming stream — a shared golden fixture pins the decode side. See `docs/codecs/float_delta_zstd.md`. |
 
 | 18 | SAM_TAGS               | SAM optional fields (columns 12+) of a run of reads (M101): a per-blob tag-line dictionary, one column per (tag key, type), MD:Z and NM:i recomputed from the reference when they match, integers equal to an earlier tag in the read stored as back-references, verbatim storage for non-canonical text. Lossless on the samtools tag text. Magic `STG1`. Context-aware (sequences, CIGARs, positions, chromosome ids, reference). One native kernel shared by the three SDKs. See §10.13 and `docs/codecs/sam_tags.md`. |
+| 19 | SEQ_CM                 | Read bases without a reference (M103): up to three base-context lengths (default 11, 16, 24) in adaptive-counter tables, a logistic mixer, training on each read's reverse complement, and a carry-less binary arithmetic coder; bytes other than A/C/G/T round-trip as exception runs. All arithmetic is integer, so every platform codes the same bytes. Magic `SQC1`. Context-aware: decode takes the reads' lengths. **Default for the `sequences` channel under `blocks_v1` when there is no reference.** One native kernel shared by the three SDKs. See `docs/codecs/seq_cm.md`. |
 
 Ids `0`–`3` ride the HDF5 filter pipeline; ids `4`+ are signalled via
 the per-channel `@compression` attribute (see §10.5). Reserved ids
@@ -975,6 +976,9 @@ migration error.
   pipeline as their default and opt in explicitly.
 - Id `18` (SAM_TAGS) applies to the genomic `tags` channel only, and
   is its only codec (§10.13).
+- Id `19` (SEQ_CM) applies to the `sequences` channel and is the
+  `blocks_v1` default when a block has no reference; writers accept it
+  as a `sequences` override on either layout.
 
 See §10.5 for the `@compression` attribute scheme, §10.6 for the
 `read_names` channel format, §10.7 for the integer-channel
@@ -1660,8 +1664,9 @@ caller sets no override: `cigars` RANS_ORDER0 (id 4, section 10.8;
 the v1.8 compound VL-string default has no blob form), `qualities`
 FQZCOMP_NX16_Z (id 12; v1.8 only used it when another v1.5 codec was
 active on the run and otherwise left zlib-filtered raw bytes), and
-`sequences` REF_DIFF_V2 (id 14) with a reference or RANS_ORDER1
-(id 5) without one. Unmapped reads inside a mapped block (FLAG 0x4,
+`sequences` REF_DIFF_V2 (id 14) with a reference, or without one
+SEQ_CM (id 19), falling back to RANS_ORDER1 (id 5) when the writer has
+no native library; the block's `sequences_codec` column records which. Unmapped reads inside a mapped block (FLAG 0x4,
 CIGAR `*`, placed on the mate's contig) stay in the REF_DIFF_V2 blob:
 the codec carries their bases as soft clip and their lengths in the
 slice's UL substream (docs/codecs/ref_diff_v2.md section 4.4). A block

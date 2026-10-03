@@ -12,6 +12,7 @@
 #import "Providers/TTIOProviderRegistry.h"
 #import "Providers/TTIOStorageProtocols.h"
 #import "ValueClasses/TTIOEnums.h"
+#import "Codecs/TTIOSeqCm.h"
 #import <stdatomic.h>
 
 @implementation TTIOBlockBlobs
@@ -200,8 +201,11 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
         for (NSUInteger i = 0; i < n; i++) if (lens[i] == 0) { zero = YES; break; }
         ov[@"qualities"] = zero ? @(TTIOCompressionRansOrder0) : @(TTIOCompressionFqzcompNx16Z);
     }
+    // Sequences without a reference: SEQ_CM (M103), or RANS_ORDER1 when
+    // libttio_rans is not linked.
     if (ov[@"sequences"] == nil && block.referenceChromSeqs == nil) {
-        ov[@"sequences"] = @(TTIOCompressionRansOrder1);
+        ov[@"sequences"] = [TTIOSeqCm nativeAvailable] ? @(TTIOCompressionSeqCm)
+                                                       : @(TTIOCompressionRansOrder1);
     }
     TTIOWrittenGenomicRun *b = [[block copyWithSignalCodecOverrides:ov] copyWithProvenance:@[]];
 

@@ -144,7 +144,7 @@ class GenomicBlocksReaderTest {
 
     @org.junit.jupiter.api.Test
     void iterReadsThreadedMatchesSerial() throws Exception {
-        // reference-less (RANS_ORDER1 sequences): a memory-provider readFrom has no resolver
+        // reference-less (SEQ_CM sequences, M103): a memory-provider readFrom has no resolver
         WrittenGenomicRun run = GenomicStreamWriterTest.bigSyntheticRun(30_000, 11).withReference(false, null, null);
         StorageGroup study = GenomicStreamWriterTest.writeWithThreads("memory://gbrt-th", run, 1, 5_000);
         try (GenomicRun g = GenomicRun.readFrom(study.openGroup("genomic_runs").openGroup("g"), "g")) {

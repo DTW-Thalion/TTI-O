@@ -120,6 +120,9 @@ static void _TTIO_M86_AllowedOverrideCodecsByChannel_init(void)
         @(TTIOCompressionRansOrder0),
         @(TTIOCompressionRansOrder1),
         @(TTIOCompressionBasePack),
+        // M103: context-aware (the read lengths), written by
+        // _TTIO_M103_WriteSequencesSeqCm*.
+        @(TTIOCompressionSeqCm),
     ]];
     NSSet *qualAllowed = [NSSet setWithArray:@[
         @(TTIOCompressionRansOrder0),
@@ -1700,6 +1703,64 @@ static NSNumber *_TTIO_M94_DefaultQualitiesCodec(TTIOWrittenGenomicRun *run)
 }
 
 
+/** SEQ_CM (codec id 19, M103) over the run's sequences, given the read
+ *  lengths from run.lengthsData (uint32 LE). Mirrors Python's
+ *  ``_write_sequences_seq_cm``. */
+static NSData *_TTIO_M103_EncodeSeqCm(TTIOWrittenGenomicRun *run, NSError **error)
+{
+    NSUInteger n = run.lengthsData.length / sizeof(uint32_t);
+    const uint32_t *lens = (const uint32_t *)run.lengthsData.bytes;
+    NSMutableArray *readLengths = [NSMutableArray arrayWithCapacity:n];
+    for (NSUInteger i = 0; i < n; i++) [readLengths addObject:@(lens[i])];
+    TTIOCodecContext *c = [TTIOCodecContext emptyContext];
+    c.readLengths = readLengths;
+    TTIOEncodedChannel *enc =
+        [[TTIOCodecRegistry codecForId:TTIOCompressionSeqCm]
+            encode:[[TTIODecodedBytes alloc] initWithData:run.sequencesData]
+           context:c
+             error:error];
+    return enc ? ((TTIOEncodedDatasetBytes *)enc).bytes : nil;
+}
+
+static BOOL _TTIO_M103_WriteSequencesSeqCm(TTIOHDF5Group *sc, TTIOWrittenGenomicRun *run,
+                                           NSError **error)
+{
+    NSData *encoded = _TTIO_M103_EncodeSeqCm(run, error);
+    if (!encoded) return NO;
+    TTIOHDF5Dataset *ds = [sc createDatasetNamed:@"sequences"
+                                        precision:TTIOPrecisionUInt8
+                                           length:encoded.length
+                                        chunkSize:65536
+                                      compression:TTIOCompressionNone
+                                 compressionLevel:0
+                                            error:error];
+    if (!ds) return NO;
+    if (![ds writeData:encoded error:error]) return NO;
+    return _TTIO_M86_WriteUInt8Attribute([ds datasetId], "compression",
+                                         (uint8_t)TTIOCompressionSeqCm, error);
+}
+
+/** Storage-protocol twin of _TTIO_M103_WriteSequencesSeqCm. */
+static BOOL _TTIO_M103_WriteSequencesSeqCmStorage(id<TTIOStorageGroup> sc,
+                                                  TTIOWrittenGenomicRun *run,
+                                                  NSError **error)
+{
+    NSData *encoded = _TTIO_M103_EncodeSeqCm(run, error);
+    if (!encoded) return NO;
+    id<TTIOStorageDataset> ds = [sc createDatasetNamed:@"sequences"
+                                              precision:TTIOPrecisionUInt8
+                                                 length:encoded.length
+                                              chunkSize:65536
+                                            compression:TTIOCompressionNone
+                                       compressionLevel:0
+                                                  error:error];
+    if (!ds) return NO;
+    if (![ds writeAll:encoded error:error]) return NO;
+    return [ds setAttributeValue:@((uint8_t)TTIOCompressionSeqCm)
+                         forName:@"compression"
+                           error:error];
+}
+
 /** Write the qualities channel through FQZCOMP_NX16_Z. Derives
  *  read_lengths from run.lengthsData (uint32 LE) and revcomp_flags
  *  from run.flagsData[i] & 16 (SAM REVERSE bit). Stamps the
@@ -2179,6 +2240,9 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
             if (!_TTIO_PhaseT_WriteRefDiffV2BulkStorage(sc, _bulkObjC.refDiffBlob, error)) return NO;
         } else if (seqOvr == nil && _TTIO_V18_UseRefDiffV2(run)) {
             if (!_TTIO_V18_WriteRefDiffV2SequencesStorage(sc, run, ctx.referenceMD5, error)) return NO;
+        } else if (seqOvr != nil
+                   && (TTIOCompression)[seqOvr unsignedIntegerValue] == TTIOCompressionSeqCm) {
+            if (!_TTIO_M103_WriteSequencesSeqCmStorage(sc, run, error)) return NO;
         } else {
             if (!_TTIO_M86_WriteByteChannelStorage(sc, @"sequences",
                                                    run.sequencesData, codec,
@@ -2709,6 +2773,9 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
     } else if (seqOverride == nil && _TTIO_V18_UseRefDiffV2(run)) {
         // group layout with refdiff_v2 child @compression=14.
         if (!_TTIO_V18_WriteRefDiffV2SequencesHDF5(sc, run, error)) return NO;
+    } else if (seqOverride != nil
+               && (TTIOCompression)[seqOverride unsignedIntegerValue] == TTIOCompressionSeqCm) {
+        if (!_TTIO_M103_WriteSequencesSeqCm(sc, run, error)) return NO;
     } else {
         if (!_TTIO_M86_WriteByteChannel(sc, @"sequences", run.sequencesData,
                                         codec,

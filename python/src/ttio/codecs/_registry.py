@@ -9,7 +9,7 @@ from typing import Protocol
 
 from ..enums import Compression
 from . import base_pack, delta_rans, quality, rans
-from . import fqzcomp_nx16_z, mate_info_v2, name_tokenizer_v2, ref_diff_v2, sam_tags
+from . import fqzcomp_nx16_z, mate_info_v2, name_tokenizer_v2, ref_diff_v2, sam_tags, seq_cm
 from ._context import ChannelPayload, CodecContext, DecodedChannel, EncodedChannel
 
 
@@ -248,6 +248,20 @@ class _SamTagsCodec:
         return EncodedChannel.of_dataset(sam_tags.encode(value.as_str_list(), **kw))
 
 
+class _SeqCmCodec:
+    """SEQ_CM (M103): read bases without a reference. Encode and decode
+    both take the reads' lengths from ``ctx.read_lengths``."""
+    id = Compression.SEQ_CM
+    is_context_aware = True
+    needs_embedded_reference = False
+
+    def decode(self, payload, ctx):
+        return DecodedChannel.of_bytes(seq_cm.decode(payload.as_bytes(), ctx.read_lengths))
+
+    def encode(self, value, ctx):
+        return EncodedChannel.of_dataset(seq_cm.encode(value.as_bytes(), ctx.read_lengths))
+
+
 CODEC_REGISTRY: "dict[Compression, Codec]" = {
     Compression.RANS_ORDER0: _RansCodec(Compression.RANS_ORDER0, 0),
     Compression.RANS_ORDER1: _RansCodec(Compression.RANS_ORDER1, 1),
@@ -259,4 +273,5 @@ CODEC_REGISTRY: "dict[Compression, Codec]" = {
     Compression.MATE_INLINE_V2: _MateInlineV2Codec(),
     Compression.REF_DIFF_V2: _RefDiffV2Codec(),
     Compression.SAM_TAGS: _SamTagsCodec(),
+    Compression.SEQ_CM: _SeqCmCodec(),
 }

@@ -157,8 +157,11 @@ public final class GenomicBlocks {
             ov.put("qualities", zero ? Enums.Compression.RANS_ORDER0
                                      : Enums.Compression.FQZCOMP_NX16_Z);
         }
+        // Sequences without a reference: SEQ_CM (M103), or RANS_ORDER1 when
+        // libttio_rans_jni is not loaded.
         if (!ov.containsKey("sequences") && block.referenceChromSeqs() == null) {
-            ov.put("sequences", Enums.Compression.RANS_ORDER1);
+            ov.put("sequences", global.thalion.ttio.codecs.SeqCm.isAvailable()
+                ? Enums.Compression.SEQ_CM : Enums.Compression.RANS_ORDER1);
         }
         WrittenGenomicRun b = block.withSignalCodecOverrides(ov).withProvenance(List.of());
         String url = "memory://ttio-block-encode-" + System.identityHashCode(block)

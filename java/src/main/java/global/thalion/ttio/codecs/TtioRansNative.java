@@ -416,4 +416,24 @@ public final class TtioRansNative {
         byte[] encoded, int nReads,
         byte[] sequences, long[] seqOffsets, byte[] cigars, long[] cigarOffsets,
         long[] positions, short[] chromIds, byte[][] refs);
+
+    /**
+     * Encode reads' bases to a SEQ_CM (codec id 19, M103) blob with the
+     * default parameters. {@code lengths} is one length per read; they
+     * must sum to {@code sequences.length}. See {@link SeqCm}.
+     */
+    public static byte[] encodeSeqCm(byte[] sequences, long[] lengths) {
+        if (!LOADED) throw new IllegalStateException("libttio_rans_jni not loaded");
+        return encodeSeqCmNative(sequences, lengths);
+    }
+
+    /** Decode a SEQ_CM blob given the reads' lengths. */
+    public static byte[] decodeSeqCm(byte[] encoded, long[] lengths) {
+        if (!LOADED) throw new IllegalStateException("libttio_rans_jni not loaded");
+        return decodeSeqCmNative(encoded, lengths);
+    }
+
+    private static native byte[] encodeSeqCmNative(byte[] sequences, long[] lengths);
+
+    private static native byte[] decodeSeqCmNative(byte[] encoded, long[] lengths);
 }

@@ -240,6 +240,28 @@ public final class CodecRegistry {
         }
     }
 
+    /** SEQ_CM (M103): read bases without a reference. Encode and decode
+     *  both take the reads' lengths from the context. */
+    static final class SeqCmCodec implements Codec {
+        public Compression id() { return Compression.SEQ_CM; }
+        public boolean isContextAware() { return true; }
+        public boolean needsEmbeddedReference() { return false; }
+
+        private static int[] lengths(CodecContext ctx) {
+            return ctx.readLengths() != null ? ctx.readLengths() : new int[0];
+        }
+
+        public DecodedChannel decode(ChannelPayload p, CodecContext ctx) {
+            return new DecodedChannel.Bytes(
+                global.thalion.ttio.codecs.SeqCm.decode(payloadBytes(p), lengths(ctx)));
+        }
+
+        public EncodedChannel encode(DecodedChannel v, CodecContext ctx) {
+            return new EncodedChannel.DatasetBytes(
+                global.thalion.ttio.codecs.SeqCm.encode(((DecodedChannel.Bytes) v).data(), lengths(ctx)));
+        }
+    }
+
     private static Map<Compression, Codec> build() {
         EnumMap<Compression, Codec> m = new EnumMap<>(Compression.class);
         m.put(Compression.RANS_ORDER0, new RansCodec(Compression.RANS_ORDER0, 0));
@@ -252,6 +274,7 @@ public final class CodecRegistry {
         m.put(Compression.MATE_INLINE_V2, new MateInfoCodec());
         m.put(Compression.REF_DIFF_V2, new RefDiffCodec());
         m.put(Compression.SAM_TAGS, new SamTagsCodec());
+        m.put(Compression.SEQ_CM, new SeqCmCodec());
         return m;
     }
 }

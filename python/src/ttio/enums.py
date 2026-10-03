@@ -122,6 +122,11 @@ class Compression(IntEnum):
     # column per tag key, MD/NM recomputed from the reference. The
     # genomic ``tags`` channel's only codec (docs/codecs/sam_tags.md).
     SAM_TAGS = 18
+    # M103: read bases without a reference, a context-mixing model plus
+    # a binary arithmetic coder; decode takes the read lengths. The
+    # blocks_v1 sequences default when there is no reference
+    # (docs/codecs/seq_cm.md).
+    SEQ_CM = 19
 
 
 class ByteOrder(IntEnum):

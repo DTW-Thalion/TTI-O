@@ -1,9 +1,13 @@
 # SEQ_CM codec (codec id 19)
 
-> **Status:** draft (M103). Reference kernel in C
-> (`native/src/seq_cm.{c,h}`). The SDK wrappers, the writer's codec
-> choice and conformance are still to come; this document is binding for
-> the wire format once M103 lands.
+> **Status:** M103. Reference kernel in C (`native/src/seq_cm.{c,h}`),
+> shared by the three SDKs (Python `ttio.codecs.seq_cm`, Java
+> `codecs.SeqCm` over JNI, ObjC `TTIOSeqCm`); the `blocks_v1` writers
+> code `sequences` with it when a block has no reference. Writers use
+> the default parameters with `table_bits` chosen from the base count
+> (§2.2), so the same reads always code to the same bytes and a per-AU
+> decrypt restore re-encodes byte-identically. This document is binding
+> for the wire format.
 
 The codec stores read bases without a reference. It replaces rANS
 order-1 for the `sequences` channel of runs with no `REF_DIFF_V2`
@@ -194,7 +198,13 @@ read as 0.
 
 ## 5. Open for M103
 
-- The writer's block size and the codec's per-block model: blocks_v1
-  codes each block on its own, so the model restarts every block. The
-  cost is being measured before the writer's policy is fixed.
-- Throughput (about 4 MB/s per core in the reference kernel).
+- Read order: blocks_v1 codes each block on its own, so the model
+  restarts every block and the result depends on which reads share a
+  block. Unaligned runs will be able to reorder their reads before
+  blocking and store the permutation (opt-in; M103 Phase 0 README,
+  "Grouping reads before blocking").
+- Throughput: about 8 MB/s per core on grouped or coordinate-ordered
+  reads, about 3 MB/s on shuffled reads, in the reference kernel.
+- Model memory: `16 << table_bits` bytes per hashed order on encode and
+  decode (about 0.5 GB at the automatic maximum of 24), per block coded
+  at once.

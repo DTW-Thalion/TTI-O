@@ -156,6 +156,7 @@ libTTIO_HEADER_FILES = \
 	Codecs/TTIOMateInfoV2.h \
 	Codecs/TTIORefDiffV2.h \
 	Codecs/TTIOSamTags.h \
+	Codecs/TTIOSeqCm.h \
 	Codecs/TTIONameTokenizerV2.h \
 	Codecs/TTIODeltaRans.h \
 	Codecs/TTIOReferenceResolver.h \
@@ -329,6 +330,7 @@ libTTIO_OBJC_FILES = \
 	Codecs/TTIOMateInfoV2.m \
 	Codecs/TTIORefDiffV2.m \
 	Codecs/TTIOSamTags.m \
+	Codecs/TTIOSeqCm.m \
 	Codecs/TTIONameTokenizerV2.m \
 	Codecs/TTIODeltaRans.m \
 	Codecs/TTIOReferenceResolver.m \

@@ -45,6 +45,7 @@ extern void testMilestone49(void);
 extern void testMilestone52(void);
 extern void testMilestone53(void);
 extern void testImzMLReader(void);
+extern void testImzMLParamGroups(void);
 extern void testMzTabReader(void);
 extern void testStress(void);
 extern void testWatersMassLynxReader(void);
@@ -384,6 +385,10 @@ int main(int argc, const char *argv[])
         START_SET("M59: ObjC imzML reader")
             testImzMLReader();
         END_SET("M59: ObjC imzML reader")
+
+        START_SET("imzML referenceableParamGroups")
+            testImzMLParamGroups();
+        END_SET("imzML referenceableParamGroups")
 
         START_SET("M60: ObjC mzTab reader")
             testMzTabReader();

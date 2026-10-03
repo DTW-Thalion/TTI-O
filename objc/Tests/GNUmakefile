@@ -40,6 +40,7 @@ TTIOTests_OBJC_FILES = \
 	TestMilestone52.m \
 	TestMilestone53.m \
 	TestImzMLReader.m \
+	TestImzMLParamGroups.m \
 	TestMzTabReader.m \
 	TestStress.m \
 	TestWatersMassLynxReader.m \

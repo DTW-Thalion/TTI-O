@@ -622,6 +622,28 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -e ".[test]"
 
+      # The exit-time use-after-free of libobjc2's weak-reference table (see
+      # objc/Source/Core/TTIOExitOrder.m) crashed only about one run in 30,
+      # but valgrind reports it on every run, so one encode under valgrind
+      # guards the fix against a toolchain bump that reorders teardown.
+      - name: ObjC tool exits cleanly under valgrind
+        working-directory: python
+        shell: bash
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/native/_build:${{ github.workspace }}/objc/Source/obj
+        run: |
+          sudo apt-get install -y -q valgrind > /dev/null
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests")
+          from _v0_11_accessor_spec import ACCESSOR_SPECS
+          spec = next(s for s in ACCESSOR_SPECS if s.name == "ENCRYPTION_ALGORITHM")
+          spec.build_fixture(Path("/tmp/exit-order.tio"))
+          PY
+          valgrind --error-exitcode=99 --leak-check=no \
+            ../objc/Tools/obj/TtioTransportEncode /tmp/exit-order.tio /tmp/exit-order.tis
+
       - name: Run cross-language parity tests
         working-directory: python
         env:
@@ -699,10 +721,12 @@ jobs:
               print(f"  {'present' if p.exists() else 'MISSING'}  {p}")
           print(f"  java on PATH: {shutil.which('java')}")
           PY
-          # The ObjC transport encoder has crashed intermittently in this job
-          # (SIGSEGV in TtioTransportEncode, twice so far, never locally).
-          # Let the tools dump core into the working directory so the step
-          # below can print a backtrace instead of "died with SIGSEGV".
+          # The ObjC transport encoder used to die intermittently here with
+          # SIGSEGV at exit: libobjc2 freed its weak-reference table before
+          # GNUstep's exit clean-up released an object with weak references
+          # (fixed by objc/Source/Core/TTIOExitOrder.m). Keep the tools
+          # dumping core into the working directory so the step below can
+          # print a backtrace instead of "died with SIGSEGV" if one recurs.
           sudo sysctl -w kernel.core_pattern='core.%e.%p' > /dev/null
           ulimit -c unlimited
           pytest -v --tb=short tests/conformance/ | tee /tmp/conformance.log

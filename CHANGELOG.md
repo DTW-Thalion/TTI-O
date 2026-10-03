@@ -257,6 +257,19 @@ public API is stable from onward.
   written before it exists open unchanged.
 
 ### Fixed
+- **ObjC tools read freed memory at exit and occasionally died with
+  SIGSEGV.** libobjc2 keeps its weak-reference table in a C++ static
+  whose destructor is registered on the first weak store, which in a
+  TTI-O tool happens inside `main()`; `exit()` therefore freed the
+  table before `_dl_fini` ran gnustep-base's clean-up, and
+  `+[NSUserDefaults atExit]` then released a weakly referenced object
+  into the freed table. Valgrind saw it on every exit of
+  `TtioTransportEncode` and `TtioDumpIdentifications`; it crashed about
+  one CI run in 30. A libTTIO constructor (`Core/TTIOExitOrder.m`) now
+  builds the table before `main()`, so it is torn down from libobjc's
+  own finaliser after gnustep-base's, and CI runs the encoder under
+  valgrind to keep it that way.
+
 - **ObjC and Java compound readers built ASCII VL-string memory types.**
   HDF5 has no ASCII↔UTF-8 string conversion path, so reading an
   h5py-written compound (UTF-8 members) failed on a cold

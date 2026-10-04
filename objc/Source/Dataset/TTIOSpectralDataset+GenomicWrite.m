@@ -2661,6 +2661,12 @@ static BOOL _TTIO_M101_WriteTagsStorage(id<TTIOStorageGroup> sc,
                          error:(NSError **)error
 {
     TTIOGenomicStreamWriterOptions *o = [TTIOGenomicStreamWriterOptions optionsFromRun:run];
+    NSString *refusal = [TTIOGenomicStreamWriter groupReadsRefusalForOptions:o];
+    if (refusal != nil) {
+        if (error) *error = TTIOMakeError(TTIOErrorInvalidArgument,
+            @"genomic run '%@': %@", name, refusal);
+        return NO;
+    }
     TTIOGenomicStreamWriter *w = [[TTIOGenomicStreamWriter alloc] initWithStudyGroup:study
                                                                              runName:name
                                                                              options:o];

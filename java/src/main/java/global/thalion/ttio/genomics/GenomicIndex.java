@@ -89,6 +89,31 @@ public final class GenomicIndex {
         this.chromosomeNameToId = chromosomeNameToId;
     }
 
+    /** This index with row {@code i} taken from row {@code order[i]},
+     *  offsets recomputed from the reordered lengths (M103: a
+     *  {@code blocks_v1_grouped} run presents its index in input order).
+     *  The interned chromosome ids move with their rows. */
+    public GenomicIndex permuted(int[] order) {
+        int n = order.length;
+        int[] lens = new int[n];
+        long[] pos = new long[n];
+        byte[] mapq = new byte[n];
+        int[] fl = new int[n];
+        List<String> chroms = new ArrayList<>(n);
+        short[] ids = chromosomeIds == null ? null : new short[n];
+        for (int i = 0; i < n; i++) {
+            int s = order[i];
+            lens[i] = lengths[s];
+            pos[i] = positions[s];
+            mapq[i] = mappingQualities[s];
+            fl[i] = flags[s];
+            chroms.add(chromosomes.get(s));
+            if (ids != null) ids[i] = chromosomeIds[s];
+        }
+        return new GenomicIndex(offsetsFromLengths(lens), lens, chroms, pos, mapq, fl,
+                                ids, chromosomeNameToId);
+    }
+
     /** Number of reads. */
     public int count() { return offsets.length; }
 

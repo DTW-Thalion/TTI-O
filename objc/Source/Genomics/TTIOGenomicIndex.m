@@ -361,4 +361,37 @@ static NSData *readTypedChannel(id<TTIOStorageGroup> g, NSString *name,
     return index;
 }
 
+static NSData *ttioPermute(NSData *d, NSUInteger elem, const uint32_t *p, NSUInteger n)
+{
+    NSMutableData *out = [NSMutableData dataWithLength:n * elem];
+    const uint8_t *src = (const uint8_t *)d.bytes;
+    uint8_t *dst = (uint8_t *)out.mutableBytes;
+    NSUInteger have = d.length / elem;
+    for (NSUInteger i = 0; i < n; i++) {
+        if (p[i] < have) memcpy(dst + i * elem, src + (NSUInteger)p[i] * elem, elem);
+    }
+    return out;
+}
+
+- (instancetype)indexPermutedBy:(NSData *)storedOf
+{
+    NSUInteger n = storedOf.length / sizeof(uint32_t);
+    const uint32_t *p = (const uint32_t *)storedOf.bytes;
+    NSData *lengths = ttioPermute(_lengthsData, sizeof(uint32_t), p, n);
+    NSMutableArray<NSString *> *chroms = [NSMutableArray arrayWithCapacity:n];
+    for (NSUInteger i = 0; i < n; i++) [chroms addObject:_chromosomes[p[i]]];
+    TTIOGenomicIndex *index = [[TTIOGenomicIndex alloc]
+        initWithOffsets:TTIOOffsetsFromLengths(lengths)
+                lengths:lengths
+            chromosomes:chroms
+              positions:ttioPermute(_positionsData, sizeof(int64_t), p, n)
+       mappingQualities:ttioPermute(_mappingQualitiesData, sizeof(uint8_t), p, n)
+                  flags:ttioPermute(_flagsData, sizeof(uint32_t), p, n)];
+    if (_chromosomeIdsData != nil) {
+        index->_chromosomeIdsData = ttioPermute(_chromosomeIdsData, sizeof(uint16_t), p, n);
+        index->_chromosomeNameToId = _chromosomeNameToId;
+    }
+    return index;
+}
+
 @end

@@ -62,6 +62,20 @@ NS_ASSUME_NONNULL_BEGIN
 /** The inverse of <code>+sliceRun:from:to:</code> for consecutive parts. */
 + (TTIOWrittenGenomicRun *)concatRuns:(NSArray<TTIOWrittenGenomicRun *> *)parts;
 
+/** M103: the reads of <code>run</code> in the order <code>order</code>
+ *  (uint32 per read; read <code>order[j]</code> at row j), offsets
+ *  recomputed. Run-level metadata is shared, provenance dropped.
+ *  Python: <code>_blocks.take_run</code>. */
++ (TTIOWrittenGenomicRun *)takeRun:(TTIOWrittenGenomicRun *)run order:(NSData *)order;
+
+/** M103: the read-grouping permutation of <code>run</code> (uint32 per
+ *  read; entry j is the input index of the read stored at row j). Reads
+ *  are grouped by sequence with <code>ttio_seq_group</code> within each
+ *  chromosome label, labels in first-seen order, so a block never spans
+ *  two labels. nil with <code>*error</code> when the native library is
+ *  missing or the kernel fails. Python: <code>_blocks.group_order</code>. */
++ (nullable NSData *)groupOrderOfRun:(TTIOWrittenGenomicRun *)run error:(NSError **)error;
+
 /** Encode one block's channels through the whole-channel writer. The
  *  forced codecs of format-spec 10.12.3 apply: cigars RANS_ORDER0,
  *  qualities FQZCOMP_NX16_Z (RANS_ORDER0 when the block holds a

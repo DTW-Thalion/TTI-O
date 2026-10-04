@@ -12,6 +12,20 @@ public API is stable from onward.
 ## [Unreleased]
 
 ### Added
+- **M103 read grouping.** An unaligned run can now be written with its
+  reads grouped by sequence before it is cut into blocks
+  (`GenomicStreamWriter(group_reads=True)`, `opt_group_reads`, importer
+  option `group_reads`, `fastq_import_cli --group-reads`), so SEQ_CM sees
+  each read's overlap partners: HG002 2x250 chr22 bases go from 1.453 to
+  0.396 bits/base (0.484 with the stored permutation). The run gets
+  `@layout = "blocks_v1_grouped"` and `genomic_index/input_index`;
+  readers in all three SDKs present it in input order, so exports
+  restore the imported order. The grouping kernel, `ttio_seq_group`, is
+  shared by the SDKs, which therefore write identical files. Per-AU
+  encryption keeps the grouping, the encrypted transport carries it
+  (transport-spec v0.13), and plaintext transport delivers input order.
+  Opt-in: on exome-depth runs the permutation costs more than grouping
+  saves (binding decisions §105-§108, format-spec §10.12.7).
 - **M103 SEQ_CM, read bases without a reference.** Runs with no
   reference (FASTQ imports, unaligned reads) now code their bases with
   SEQ_CM (codec id 19) under `blocks_v1`, instead of rANS order-1: a

@@ -34,7 +34,8 @@ public final class BamReaderAdapter implements Reader {
         d.genomicStreams.put(name, r.stream(name, region, sample, StreamOpts.referencePath(opts),
             StreamOpts.flag(opts, "embed_reference"), StreamOpts.batchReads(opts))
             .withPolicy(StreamOpts.blockReads(opts), StreamOpts.blockBytes(opts),
-                        StreamOpts.flag(opts, "legacy_whole_channel")));
+                        StreamOpts.flag(opts, "legacy_whole_channel"),
+                        StreamOpts.groupReads(opts)));
         return d;
     }
 

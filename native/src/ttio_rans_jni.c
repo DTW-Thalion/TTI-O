@@ -1472,3 +1472,57 @@ Java_global_thalion_ttio_codecs_TtioRansNative_decodeSeqCmNative(
     ttio_seq_cm_free(out);
     return result;
 }
+
+/* ── Read grouping (M103) ───────────────────────────────────────────
+ * ttio_seq_group at its defaults. names/name_offsets may be null, which
+ * turns mate seeding off. Returns the order (stored row -> input index). */
+
+JNIEXPORT jintArray JNICALL
+Java_global_thalion_ttio_codecs_TtioRansNative_groupReadsNative(
+    JNIEnv *env, jclass cls, jbyteArray seq_arr, jlongArray lengths_arr,
+    jbyteArray names_arr, jlongArray name_offsets_arr)
+{
+    (void)cls;
+    jsize n_seq = (*env)->GetArrayLength(env, seq_arr);
+    jsize n_reads = (*env)->GetArrayLength(env, lengths_arr);
+    int with_names = names_arr != NULL && name_offsets_arr != NULL;
+    if (with_names && (*env)->GetArrayLength(env, name_offsets_arr) != n_reads + 1) {
+        seq_cm_throw(env, "group", TTIO_RANS_ERR_PARAM);
+        return NULL;
+    }
+    jbyte *seq = (*env)->GetByteArrayElements(env, seq_arr, NULL);
+    jlong *lens = (*env)->GetLongArrayElements(env, lengths_arr, NULL);
+    jbyte *names = with_names ? (*env)->GetByteArrayElements(env, names_arr, NULL) : NULL;
+    jlong *noff = with_names ? (*env)->GetLongArrayElements(env, name_offsets_arr, NULL) : NULL;
+    int rc = 0;
+    uint64_t total = 0;
+    for (jsize i = 0; i < n_reads; i++) {
+        if (lens[i] < 0) { rc = TTIO_RANS_ERR_PARAM; break; }
+        total += (uint64_t)lens[i];
+    }
+    if (!rc && total != (uint64_t)n_seq) rc = TTIO_RANS_ERR_PARAM;
+    uint32_t *order = (uint32_t *)malloc((n_reads ? (size_t)n_reads : 1) * sizeof *order);
+    if (!rc && !order) rc = TTIO_RANS_ERR_ALLOC;
+    if (!rc) {
+        ttio_seq_group_params p;
+        ttio_seq_group_default_params(&p);
+        if (!with_names) p.flags &= (uint8_t)~TTIO_SEQ_GROUP_FLAG_MATES;
+        static const uint8_t empty = 0;
+        rc = ttio_seq_group(n_seq ? (const uint8_t *)seq : &empty, (const uint64_t *)lens,
+                            (uint64_t)n_reads, (const uint8_t *)names, (const uint64_t *)noff,
+                            &p, order);
+    }
+    (*env)->ReleaseByteArrayElements(env, seq_arr, seq, JNI_ABORT);
+    (*env)->ReleaseLongArrayElements(env, lengths_arr, lens, JNI_ABORT);
+    if (names) (*env)->ReleaseByteArrayElements(env, names_arr, names, JNI_ABORT);
+    if (noff) (*env)->ReleaseLongArrayElements(env, name_offsets_arr, noff, JNI_ABORT);
+    if (rc != 0) {
+        free(order);
+        seq_cm_throw(env, "group", rc);
+        return NULL;
+    }
+    jintArray result = (*env)->NewIntArray(env, n_reads);
+    if (result && n_reads) (*env)->SetIntArrayRegion(env, result, 0, n_reads, (const jint *)order);
+    free(order);
+    return result;
+}

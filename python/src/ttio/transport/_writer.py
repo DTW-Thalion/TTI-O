@@ -77,8 +77,13 @@ def _wire_channel_encoder(codec: str):
 def _bulk_carriable(run) -> bool:
     """Whether a genomic run's channel blobs can be carried verbatim:
     every whole-channel run, and a blocks_v1 run with exactly one block
-    (its blobs are the whole-channel blobs). Multi-block runs go per-AU."""
-    return getattr(run, "layout", "whole") != "blocks_v1" or run.block_count == 1
+    (its blobs are the whole-channel blobs). Multi-block runs go per-AU,
+    and so does a grouped run (M103): its blobs are in stored order while
+    its access units are in input order."""
+    layout = getattr(run, "layout", "whole")
+    if layout == "blocks_v1_grouped":
+        return False
+    return layout != "blocks_v1" or run.block_count == 1
 
 
 class TransportWriter:

@@ -425,6 +425,20 @@ static BOOL emitBlocksV1Sidecars(TTIOTransportWriter *writer,
             mateNames = [TTIOBlockView readNamesIn:mg named:@"chrom_names"];
         }
     }
+    // blocks_v1_grouped (M103, transport-spec v0.13): each BlockSidecar
+    // ends with the block's rows of genomic_index/input_index.
+    NSData *inputIndex = nil;
+    if ([readStringAttr(gRun, @"layout") ?: @"" isEqualToString:@"blocks_v1_grouped"]) {
+        id<TTIOStorageDataset> iiDs = [gIdx openDatasetNamed:@"input_index" error:error];
+        id raw = iiDs ? [iiDs readAll:error] : nil;
+        if (![raw isKindOfClass:[NSData class]]
+            || [(NSData *)raw length] != (NSUInteger)table.readCount * sizeof(uint32_t)) {
+            if (error && *error == nil) *error = makeErr(34,
+                @"blocks_v1_grouped run without a usable genomic_index/input_index");
+            return NO;
+        }
+        inputIndex = raw;
+    }
 
     NSData *attrsJson = [NSJSONSerialization
         dataWithJSONObject:attrs options:TTIO_JSON_SORTED_KEYS error:NULL];
@@ -486,6 +500,13 @@ static BOOL emitBlocksV1Sidecars(TTIOTransportWriter *writer,
             appendLEString(bp, ch, 2);
             appendU32LE(bp, (uint32_t)data.length);
             [bp appendData:data];
+        }
+        if (inputIndex != nil) {
+            // v0.13: the block's rows of input_index, n_reads x uint32 LE.
+            const uint32_t *ii = (const uint32_t *)inputIndex.bytes;
+            NSUInteger r0 = (NSUInteger)[table readStartAt:b];
+            NSUInteger nr = (NSUInteger)[table nReadsAt:b];
+            for (NSUInteger k = 0; k < nr; k++) appendU32LE(bp, ii[r0 + k]);
         }
         [writer _writeRawPacketHeader:TTIOTransportPacketBlockSidecar
                                  flags:0
@@ -610,6 +631,17 @@ static NSDictionary *decodeBlockSidecar(NSData *payload)
         off += bl;
     }
     out[@"blobs"] = blobs;
+    // v0.13 (M103): a blocks_v1_grouped run's sidecar ends with the
+    // block's input_index rows, n_reads x uint32 LE; anything else
+    // trailing is malformed.
+    if (off < len) {
+        NSUInteger nr = [out[@"n_reads"] unsignedIntegerValue];
+        if (len - off != 4 * nr) return nil;
+        NSMutableData *ii = [NSMutableData dataWithLength:nr * sizeof(uint32_t)];
+        uint32_t *iv = (uint32_t *)ii.mutableBytes;
+        for (NSUInteger k = 0; k < nr; k++) iv[k] = readU32LE(&b[off + 4 * k]);
+        out[@"input_index"] = ii;
+    }
     return out;
 }
 
@@ -716,8 +748,13 @@ static NSDictionary *decodeBlockSidecar(NSData *payload)
         }
         NSMutableArray *streamFeatures =
             [NSMutableArray arrayWithArray:features];
-        if ([genomicLayouts.allValues containsObject:@"blocks_v1"]) {
+        if ([genomicLayouts.allValues containsObject:@"blocks_v1"]
+            || [genomicLayouts.allValues containsObject:@"blocks_v1_grouped"]) {
             [streamFeatures addObject:@"transport_blocks_v1"];
+        }
+        // transport-spec v0.13 (M103): BlockSidecars carry input_index.
+        if ([genomicLayouts.allValues containsObject:@"blocks_v1_grouped"]) {
+            [streamFeatures addObject:@"transport_blocks_v1_grouped"];
         }
 
         // StreamHeader
@@ -883,7 +920,8 @@ static NSDictionary *decodeBlockSidecar(NSData *payload)
                                             instrumentJSON:gMetaJson
                                           expectedAUCount:gNReads
                                                      error:error]) return NO;
-            if ([genomicLayouts[gRunName] isEqualToString:@"blocks_v1"]
+            if (([genomicLayouts[gRunName] isEqualToString:@"blocks_v1"]
+                 || [genomicLayouts[gRunName] isEqualToString:@"blocks_v1_grouped"])
                 && !emitBlocksV1Sidecars(writer, gRun, gSig, did, error)) {
                 return NO;
             }
@@ -1589,6 +1627,30 @@ static BOOL writeBlocksV1GenomicRun(id<TTIOStorageGroup> gRunsGroup,
                            extendable:YES
                                 error:error];
         if (!ds || ![ds appendData:a[2] error:error]) return NO;
+    }
+    if ([sc[@"layout"] isEqualToString:@"blocks_v1_grouped"]) {
+        // M103: the permutation back to input order, from the sidecars.
+        NSMutableData *ii = [NSMutableData data];
+        for (NSDictionary *bs in sidecars) {
+            NSData *part = bs[@"input_index"];
+            if (part == nil) {
+                if (error) *error = makeErr(34,
+                    @"genomic run '%@': blocks_v1_grouped stream without "
+                    @"input_index in its BlockSidecars", acc.name);
+                return NO;
+            }
+            [ii appendData:part];
+        }
+        id<TTIOStorageDataset> iiDs =
+            [gIdx createDatasetNamed:@"input_index"
+                            precision:TTIOPrecisionUInt32
+                               length:0
+                            chunkSize:65536
+                          compression:TTIOCompressionZlib
+                     compressionLevel:6
+                           extendable:YES
+                                error:error];
+        if (!iiDs || ![iiDs appendData:ii error:error]) return NO;
     }
     NSArray<TTIOCompoundField *> *nameFields = @[
         [TTIOCompoundField fieldWithName:@"name"
@@ -2338,6 +2400,7 @@ static BOOL writeEncryptedFile(NSString *path,
     // The blocks_v1 wire token is transport-scoped and never a
     // container feature flag.
     [featureSet removeObject:@"transport_blocks_v1"];
+    [featureSet removeObject:@"transport_blocks_v1_grouped"];
     [featureSet addObject:@"opt_per_au_encryption"];
     BOOL anyHeaderEncrypted = NO;
     for (NSNumber *k in datasets) {

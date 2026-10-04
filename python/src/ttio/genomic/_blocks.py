@@ -97,6 +97,64 @@ def concat_runs(parts: list[WrittenGenomicRun]) -> WrittenGenomicRun:
     )
 
 
+def take_run(run: WrittenGenomicRun, order: np.ndarray) -> WrittenGenomicRun:
+    """The reads of ``run`` in the order ``order`` (read ``order[j]`` at row
+    ``j``), offsets recomputed. Run-level metadata is shared by reference."""
+    order = np.asarray(order, dtype=np.int64)
+    lengths = np.asarray(run.lengths, dtype=np.uint32)[order]
+    starts = np.asarray(run.offsets, dtype=np.int64)[order]
+    offsets = np.zeros(len(order), dtype=np.uint64)
+    if len(order) > 1:
+        offsets[1:] = np.cumsum(lengths[:-1], dtype=np.uint64)
+    total = int(lengths.sum(dtype=np.uint64))
+    if total:
+        # Byte gather: for each output byte, its source byte.
+        rep = np.repeat(starts - offsets.astype(np.int64), lengths.astype(np.int64))
+        src = np.arange(total, dtype=np.int64) + rep
+        seqs = np.asarray(run.sequences)[src]
+        quals = np.asarray(run.qualities)[src] if len(run.qualities) else run.qualities[:0]
+    else:
+        seqs = np.asarray(run.sequences)[:0]
+        quals = np.asarray(run.qualities)[:0]
+    idx = order.tolist()
+    return dataclasses.replace(
+        run,
+        positions=np.asarray(run.positions)[order],
+        mapping_qualities=np.asarray(run.mapping_qualities)[order],
+        flags=np.asarray(run.flags)[order],
+        sequences=seqs, qualities=quals, offsets=offsets, lengths=lengths,
+        cigars=[run.cigars[i] for i in idx],
+        read_names=[run.read_names[i] for i in idx],
+        mate_chromosomes=[run.mate_chromosomes[i] for i in idx],
+        mate_positions=np.asarray(run.mate_positions)[order],
+        template_lengths=np.asarray(run.template_lengths)[order],
+        chromosomes=[run.chromosomes[i] for i in idx],
+        tags=None if run.tags is None else [run.tags[i] for i in idx],
+        provenance_records=[],
+    )
+
+
+def group_order(run: WrittenGenomicRun) -> np.ndarray:
+    """The read-grouping permutation of ``run`` (M103): reads are grouped
+    by sequence within each chromosome label, labels in first-seen order,
+    so a block still never spans two labels. Entry ``j`` is the input
+    index of the read stored at row ``j`` (uint32)."""
+    from ..codecs import seq_group
+    n = len(run.lengths)
+    if n == 0:
+        return np.zeros(0, dtype=np.uint32)
+    labels: dict[str, list[int]] = {}
+    for i, c in enumerate(run.chromosomes):
+        labels.setdefault(c, []).append(i)
+    parts = []
+    for members in labels.values():
+        sub = run if len(labels) == 1 else take_run(run, np.asarray(members))
+        local = seq_group.group(bytes(np.asarray(sub.sequences, dtype=np.uint8).tobytes()),
+                                np.asarray(sub.lengths, dtype=np.uint64), list(sub.read_names))
+        parts.append(np.asarray(members, dtype=np.uint32)[local])
+    return np.concatenate(parts).astype(np.uint32)
+
+
 def _try_group(parent, name: str):
     try:
         return parent.open_group(name)

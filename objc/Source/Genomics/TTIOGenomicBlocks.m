@@ -13,6 +13,7 @@
 #import "Providers/TTIOStorageProtocols.h"
 #import "ValueClasses/TTIOEnums.h"
 #import "Codecs/TTIOSeqCm.h"
+#import "Codecs/TTIOSeqGroup.h"
 #import <stdatomic.h>
 
 @implementation TTIOBlockBlobs
@@ -186,6 +187,127 @@ static id<TTIOStorageGroup> ttioTryGroup(id<TTIOStorageGroup> parent, NSString *
     c.refDiffSliceBytes = first.refDiffSliceBytes;
     c.tags = tags;
     return c;
+}
+
+static NSData *ttioGather(NSData *d, NSUInteger elem, const uint32_t *ord, NSUInteger n)
+{
+    NSMutableData *out = [NSMutableData dataWithLength:n * elem];
+    const uint8_t *src = (const uint8_t *)d.bytes;
+    uint8_t *dst = (uint8_t *)out.mutableBytes;
+    NSUInteger have = d.length / elem;
+    for (NSUInteger j = 0; j < n; j++) {
+        if (ord[j] < have) memcpy(dst + j * elem, src + (NSUInteger)ord[j] * elem, elem);
+    }
+    return out;
+}
+
+static NSArray *ttioGatherArray(NSArray *a, const uint32_t *ord, NSUInteger n)
+{
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:n];
+    for (NSUInteger j = 0; j < n; j++) [out addObject:a[ord[j]]];
+    return out;
+}
+
++ (TTIOWrittenGenomicRun *)takeRun:(TTIOWrittenGenomicRun *)run order:(NSData *)order
+{
+    NSUInteger n = order.length / sizeof(uint32_t);
+    const uint32_t *ord = (const uint32_t *)order.bytes;
+    const uint64_t *offs = (const uint64_t *)run.offsetsData.bytes;
+    const uint32_t *lens = (const uint32_t *)run.lengthsData.bytes;
+    NSMutableData *lengths = [NSMutableData dataWithLength:n * sizeof(uint32_t)];
+    NSMutableData *offsets = [NSMutableData dataWithLength:n * sizeof(uint64_t)];
+    uint32_t *l = (uint32_t *)lengths.mutableBytes;
+    uint64_t *o = (uint64_t *)offsets.mutableBytes;
+    uint64_t total = 0;
+    for (NSUInteger j = 0; j < n; j++) {
+        l[j] = lens[ord[j]];
+        o[j] = total;
+        total += l[j];
+    }
+    NSMutableData *seqs = [NSMutableData dataWithLength:(NSUInteger)total];
+    BOOL haveQuals = run.qualitiesData.length > 0;
+    NSMutableData *quals = [NSMutableData dataWithLength:haveQuals ? (NSUInteger)total : 0];
+    const uint8_t *ss = (const uint8_t *)run.sequencesData.bytes;
+    const uint8_t *qs = (const uint8_t *)run.qualitiesData.bytes;
+    uint8_t *sd = (uint8_t *)seqs.mutableBytes;
+    uint8_t *qd = (uint8_t *)quals.mutableBytes;
+    for (NSUInteger j = 0; j < n; j++) {
+        if (!l[j]) continue;
+        uint64_t s = offs[ord[j]];
+        memcpy(sd + o[j], ss + s, l[j]);
+        if (haveQuals) memcpy(qd + o[j], qs + s, l[j]);
+    }
+    TTIOWrittenGenomicRun *t = [[TTIOWrittenGenomicRun alloc]
+        initWithAcquisitionMode:run.acquisitionMode
+                   referenceUri:run.referenceUri
+                       platform:run.platform
+                     sampleName:run.sampleName
+                      positions:ttioGather(run.positionsData, sizeof(int64_t), ord, n)
+               mappingQualities:ttioGather(run.mappingQualitiesData, 1, ord, n)
+                          flags:ttioGather(run.flagsData, sizeof(uint32_t), ord, n)
+                      sequences:seqs
+                      qualities:quals
+                        offsets:offsets
+                        lengths:lengths
+                         cigars:ttioGatherArray(run.cigars, ord, n)
+                      readNames:ttioGatherArray(run.readNames, ord, n)
+                mateChromosomes:ttioGatherArray(run.mateChromosomes, ord, n)
+                  matePositions:ttioGather(run.matePositionsData, sizeof(int64_t), ord, n)
+                templateLengths:ttioGather(run.templateLengthsData, sizeof(int32_t), ord, n)
+                    chromosomes:ttioGatherArray(run.chromosomes, ord, n)
+              signalCompression:run.signalCompression
+           signalCodecOverrides:run.signalCodecOverrides];
+    t.optDisableQualitiesV5 = run.optDisableQualitiesV5;
+    t.embedReference = run.embedReference;
+    t.referenceChromSeqs = run.referenceChromSeqs;
+    t.externalReferencePath = run.externalReferencePath;
+    t.optLegacyWholeChannel = run.optLegacyWholeChannel;
+    t.optGroupReads = run.optGroupReads;
+    t.readRole = run.readRole;
+    t.refDiffSliceBytes = run.refDiffSliceBytes;
+    t.tags = run.tags ? ttioGatherArray(run.tags, ord, n) : nil;
+    return t;
+}
+
++ (nullable NSData *)groupOrderOfRun:(TTIOWrittenGenomicRun *)run error:(NSError **)error
+{
+    NSUInteger n = run.readCount;
+    if (n == 0) return [NSData data];
+    // Labels in first-seen order, each with its members in input order.
+    NSMutableArray<NSString *> *labelOrder = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableData *> *members = [NSMutableDictionary dictionary];
+    NSArray<NSString *> *chroms = run.chromosomes;
+    for (NSUInteger i = 0; i < n; i++) {
+        NSString *c = chroms[i];
+        NSMutableData *m = members[c];
+        if (m == nil) {
+            m = [NSMutableData data];
+            members[c] = m;
+            [labelOrder addObject:c];
+        }
+        uint32_t v = (uint32_t)i;
+        [m appendBytes:&v length:sizeof v];
+    }
+    NSMutableData *out = [NSMutableData dataWithCapacity:n * sizeof(uint32_t)];
+    for (NSString *c in labelOrder) {
+        NSData *mem = members[c];
+        TTIOWrittenGenomicRun *sub = labelOrder.count == 1 ? run : [self takeRun:run order:mem];
+        NSUInteger k = sub.readCount;
+        NSMutableData *lens64 = [NSMutableData dataWithLength:k * sizeof(uint64_t)];
+        uint64_t *lp = (uint64_t *)lens64.mutableBytes;
+        const uint32_t *l32 = (const uint32_t *)sub.lengthsData.bytes;
+        for (NSUInteger i = 0; i < k; i++) lp[i] = l32[i];
+        NSData *local = [TTIOSeqGroup groupSequences:sub.sequencesData lengths:lens64
+                                               names:sub.readNames error:error];
+        if (local == nil) return nil;
+        const uint32_t *lo = (const uint32_t *)local.bytes;
+        const uint32_t *mv = (const uint32_t *)mem.bytes;
+        for (NSUInteger j = 0; j < k; j++) {
+            uint32_t v = mv[lo[j]];
+            [out appendBytes:&v length:sizeof v];
+        }
+    }
+    return out;
 }
 
 + (TTIOBlockBlobs *)encodeBlock:(TTIOWrittenGenomicRun *)block

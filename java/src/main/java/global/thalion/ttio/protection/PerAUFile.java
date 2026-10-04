@@ -1233,7 +1233,11 @@ public final class PerAUFile {
         try (StorageGroup run = gRuns.openGroup(runName)) {
             if (!run.hasAttribute("layout")) return false;
             Object layout = run.getAttribute("layout");
-            return layout != null && "blocks_v1".equals(layout.toString());
+            // blocks_v1_grouped (M103) is blocks_v1 plus
+            // genomic_index/input_index; per-AU work walks stored rows
+            // block by block and leaves the column as it is.
+            return layout != null && global.thalion.ttio.genomics.GenomicStreamWriter
+                .isBlocksLayout(layout.toString());
         }
     }
 
@@ -1328,20 +1332,23 @@ public final class PerAUFile {
 
     private static BlockRun blocksV1BlockRun(GenomicRun rd,
             StorageGroup runGroup, StorageGroup study, BlockTable t,
-            int b, long indexBase) {
-        return blocksV1BlockRun(rd, runGroup, study, t, b, indexBase, null);
+            int b, long indexBase, int[] inputIndex) {
+        return blocksV1BlockRun(rd, runGroup, study, t, b, indexBase, null, inputIndex);
     }
 
     /** Collect reads {@code [indexBase, indexBase+nn)} from an open
      *  reader into a per-block {@link WrittenGenomicRun}. The encrypt
      *  walker reads block {@code b} through the run's own reader
      *  ({@code indexBase = readStartAt(b)}); the decrypt walker reads
-     *  a materialised one-block view ({@code indexBase = 0}). */
+     *  a materialised one-block view ({@code indexBase = 0}). The rows
+     *  are STORED rows: for a grouped run (M103) {@code inputIndex} maps
+     *  stored row {@code j} to the input index the reader presents it
+     *  at; {@code null} reads row {@code j} as is. */
     /** {@code tags}, when given, are the block's decrypted tag texts
      *  (M101); otherwise each read's tags come from the reader. */
     private static BlockRun blocksV1BlockRun(GenomicRun rd,
             StorageGroup runGroup, StorageGroup study, BlockTable t,
-            int b, long indexBase, List<String> tags) {
+            int b, long indexBase, List<String> tags, int[] inputIndex) {
         int nn = t.nReadsAt(b);
         List<String> readTags = new ArrayList<>(nn);
         long[] positions = new long[nn];
@@ -1358,7 +1365,8 @@ public final class PerAUFile {
         ByteArrayOutputStream seq = new ByteArrayOutputStream();
         ByteArrayOutputStream qual = new ByteArrayOutputStream();
         for (int i = 0; i < nn; i++) {
-            AlignedRead r = rd.readAt((int) (indexBase + i));
+            int row = (int) (indexBase + i);
+            AlignedRead r = rd.readAt(inputIndex != null ? inputIndex[row] : row);
             byte[] sb = r.sequence().getBytes(StandardCharsets.US_ASCII);
             offsets[i] = seq.size();
             seq.writeBytes(sb);
@@ -1449,6 +1457,9 @@ public final class PerAUFile {
             if (channels.isEmpty()) return;
             BlockTable t = BlockTable.read(runGroup);
             GenomicRun rd = GenomicRun.readFrom(runGroup, runName);
+            // A grouped run's reader presents input order; the walk is
+            // over stored rows (M103).
+            int[] inputIndex = rd.inputIndex();
 
             Map<String, StorageDataset> segDs = new LinkedHashMap<>();
             long tagOffset = 0;   // global plaintext offset of the tags channel
@@ -1461,7 +1472,7 @@ public final class PerAUFile {
                 }
                 for (int b = 0; b < t.count(); b++) {
                     BlockRun br = blocksV1BlockRun(rd, runGroup, study,
-                                                   t, b, t.readStartAt(b));
+                                                   t, b, t.readStartAt(b), inputIndex);
                     long[] local = new long[t.nReadsAt(b)];
                     int[] blkLens = br.run().lengths();
                     long cum = 0;
@@ -1596,7 +1607,7 @@ public final class PerAUFile {
                         GenomicRun rd =
                             GenomicRun.readFrom(view.group(), "block");
                         br = blocksV1BlockRun(rd, runGroup, study, t, b, 0,
-                                              tagTexts);
+                                              tagTexts, null);
                     } finally {
                         view.discard();
                     }

@@ -251,6 +251,13 @@ attribute (`format-spec.md` §10.12):
   (`SpectralDataset.write_minimal` and `GenomicStreamWriter` alike).
   The run is a sequence of independently coded blocks; a block index
   records where each block's blob sits in each channel dataset.
+- **`blocks_v1_grouped`** (M103) — `blocks_v1` with an unaligned
+  run's reads grouped by sequence before blocking and
+  `genomic_index/input_index` holding the permutation. Opt-in
+  (`group_reads` on the stream writer and importers, `opt_group_reads`
+  on a written run). Readers present the run in input order; block
+  iteration stays in stored order and maps rows through
+  `run.input_index`. See format-spec §10.12.7.
 - **Whole-channel** — the legacy layout (no `@layout` attribute); one
   codec blob per channel covering the whole run. Written only when
   `opt_legacy_whole_channel=True`; readers keep full support.

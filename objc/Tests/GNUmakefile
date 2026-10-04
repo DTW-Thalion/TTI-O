@@ -100,6 +100,7 @@ TTIOTests_OBJC_FILES = \
 	TestM101SamTags.m \
 	TestM102PixelCoordinates.m \
 	TestM103SeqCm.m \
+	TestM103ReadGrouping.m \
 	TestNameTokenizerV2.m \
 	TestNameTokenizedV2Dispatch.m \
 	TestOffsetsCumsum.m \

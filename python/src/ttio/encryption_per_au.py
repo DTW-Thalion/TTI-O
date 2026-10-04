@@ -368,7 +368,10 @@ def _split_tag_texts(flat: bytes, lengths) -> list[str]:
 
 
 def _blocks_v1_layout(run_group) -> bool:
-    return _get_str_attr(run_group, "layout") == "blocks_v1"
+    # blocks_v1_grouped (M103) is blocks_v1 plus genomic_index/input_index;
+    # per-AU work walks stored rows block by block and leaves the column
+    # as it is.
+    return _get_str_attr(run_group, "layout") in ("blocks_v1", "blocks_v1_grouped")
 
 
 def _embedded_reference_seqs(references_group, uri: str):

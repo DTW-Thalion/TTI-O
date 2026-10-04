@@ -1147,8 +1147,11 @@ public final class TransportWriter implements AutoCloseable {
     }
 
     /** Whole-channel runs and one-block {@code blocks_v1} runs carry
-     *  their v2 blobs verbatim; a multi-block run goes per AU. */
+     *  their v2 blobs verbatim; a multi-block run goes per AU, and so
+     *  does a grouped run (M103): its blobs are in stored order while its
+     *  access units are in input order. */
     static boolean bulkCarriable(GenomicRun run) {
+        if ("blocks_v1_grouped".equals(run.layout())) return false;
         return !"blocks_v1".equals(run.layout()) || run.blockCount() == 1;
     }
 
@@ -1258,13 +1261,23 @@ public final class TransportWriter implements AutoCloseable {
         // time is dominated by the objectAtIndex String roundtrip +
         // AlignedRead allocation; pre-fetching skips both for the seq
         // and name paths.
-        byte[] seqAll = n > 0 ? run.sequencesFull() : new byte[0];
-        byte[] qualAll = n > 0 ? run.qualitiesFull() : new byte[0];
-        java.util.List<String> namesAll = run.readNamesAll();
-        global.thalion.ttio.genomics.GenomicIndex idx = run.index();
+        // A grouped run (M103) is walked through its input-order read
+        // iterator, which decodes each block once per pass; its per-read
+        // accessors would hop between blocks.
+        java.util.Iterator<global.thalion.ttio.genomics.AlignedRead> grouped =
+            "blocks_v1_grouped".equals(run.layout()) ? run.iterReads() : null;
+        byte[] seqAll = n > 0 && grouped == null ? run.sequencesFull() : new byte[0];
+        byte[] qualAll = n > 0 && grouped == null ? run.qualitiesFull() : new byte[0];
+        java.util.List<String> namesAll = grouped == null ? run.readNamesAll() : List.of();
+        global.thalion.ttio.genomics.GenomicIndex idx = grouped == null ? run.index() : null;
         boolean hasTags = run.hasTagsChannel();
         List<AccessUnit> out = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
+            if (grouped != null) {
+                out.add(genomicReadAccessUnit(grouped.next(), acqMode, seqCodec,
+                                              qualCodec, hasTags));
+                continue;
+            }
             long offset = idx.offsetAt(i);
             int length = idx.lengthAt(i);
             byte[] seqBytes = new byte[length];
@@ -1334,6 +1347,52 @@ public final class TransportWriter implements AutoCloseable {
             out.add(au);
         }
         return out;
+    }
+
+    /** One read's AU, from the read itself: the same bytes
+     *  {@link #genomicRunAccessUnits} builds from the bulk channels. */
+    private static AccessUnit genomicReadAccessUnit(
+            global.thalion.ttio.genomics.AlignedRead r, int acqMode,
+            int seqCodec, int qualCodec, boolean hasTags) {
+        int precisionUint8 = Enums.Precision.UINT8.ordinal();
+        int compressionNone = Enums.Compression.NONE.ordinal();
+        byte[] seqBytes = (r.sequence() == null ? "" : r.sequence())
+            .getBytes(StandardCharsets.US_ASCII);
+        byte[] qualBytes = r.qualities() == null ? new byte[0] : r.qualities();
+        byte[] cigarBytes = (r.cigar() == null ? "" : r.cigar())
+            .getBytes(StandardCharsets.UTF_8);
+        byte[] nameBytes = (r.readName() == null ? "" : r.readName())
+            .getBytes(StandardCharsets.UTF_8);
+        byte[] mateChrBytes = (r.mateChromosome() == null ? "" : r.mateChromosome())
+            .getBytes(StandardCharsets.UTF_8);
+        List<ChannelData> channels = new ArrayList<>(5);
+        channels.add(new ChannelData("sequences", precisionUint8,
+                seqCodec, seqBytes.length, applyWireCodec(seqBytes, seqCodec)));
+        channels.add(new ChannelData("qualities", precisionUint8,
+                qualCodec, qualBytes.length, applyWireCodec(qualBytes, qualCodec)));
+        channels.add(new ChannelData("cigar", precisionUint8,
+                compressionNone, cigarBytes.length, cigarBytes));
+        channels.add(new ChannelData("read_name", precisionUint8,
+                compressionNone, nameBytes.length, nameBytes));
+        channels.add(new ChannelData("mate_chromosome", precisionUint8,
+                compressionNone, mateChrBytes.length, mateChrBytes));
+        if (hasTags) {
+            byte[] tagBytes = (r.tags() == null ? "" : r.tags()).getBytes(StandardCharsets.UTF_8);
+            channels.add(new ChannelData("tags", precisionUint8,
+                    compressionNone, tagBytes.length, tagBytes));
+        }
+        return new AccessUnit(
+                5, acqMode, 0, 2,
+                0.0, 0.0, 0,
+                0.0, 0.0,
+                channels,
+                0L, 0L, 0L,
+                r.chromosome(),
+                r.position(),
+                r.mappingQuality(),
+                r.flags() & 0xFFFF,
+                r.matePosition(),
+                r.templateLength());
     }
 
     /** encode {@code plaintext} with the given wire codec id.

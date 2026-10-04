@@ -18,12 +18,18 @@
 #import "Dataset/TTIOCompoundIO.h"
 #import "Codecs/TTIOFqzcompNx16Z.h"
 #import "Codecs/TTIOQuality.h"
+#import "Codecs/TTIOSeqGroup.h"
 #import "Genomics/TTIOLazyReference.h"
 #import <pthread.h>
 #include <string.h>
 #include <openssl/md5.h>  // reference-set digest for @reference_md5s
 
 static NSString *const kLayout = @"blocks_v1";
+/* blocks_v1 with the reads reordered by sequence and
+ * genomic_index/input_index restoring input order (M103). A distinct
+ * value so readers that predate it refuse the run rather than read it
+ * in stored order (format-spec 10.12.7). */
+static NSString *const kLayoutGrouped = @"blocks_v1_grouped";
 static const NSUInteger kDefaultBlockReads = 1000000;
 /* A block is the unit of encode concurrency and of residency, so a
  * big one costs both: the pool cannot start a block that is still
@@ -75,6 +81,7 @@ static const NSUInteger kIndexArrayChunk = 65536;
     o.signalCodecOverrides = run.signalCodecOverrides ?: @{};
     o.signalCompression = run.signalCompression;
     o.optLegacyWholeChannel = run.optLegacyWholeChannel;
+    o.groupReads = run.optGroupReads;
     o.provenanceRecords = run.provenanceRecords ?: @[];
     return o;
 }
@@ -96,6 +103,7 @@ static const NSUInteger kIndexArrayChunk = 65536;
     o.signalCodecOverrides = _signalCodecOverrides;
     o.signalCompression = _signalCompression;
     o.optLegacyWholeChannel = _optLegacyWholeChannel;
+    o.groupReads = _groupReads;
     o.provenanceRecords = _provenanceRecords;
     o.threads = _threads;
     o.memoryBudgetBytes = _memoryBudgetBytes;
@@ -142,6 +150,10 @@ static const NSUInteger kIndexArrayChunk = 65536;
     BOOL _embedded;
     BOOL _closed;
     NSMutableArray<TTIOWrittenGenomicRun *> *_legacyParts;
+    /* M103 grouping: every batch until close, then the permutation
+     * (uint32, row j = input index of the read stored at row j). */
+    NSMutableArray<TTIOWrittenGenomicRun *> *_groupParts;
+    NSData *_inputIndex;
     NSUInteger _threads;
     TTIOThreadPool *_pool;
     NSMutableArray<TTIOInFlightBlock *> *_inflight;
@@ -152,6 +164,20 @@ static const NSUInteger kIndexArrayChunk = 65536;
 }
 
 + (NSString *)layout { return kLayout; }
++ (NSString *)groupedLayout { return kLayoutGrouped; }
+
++ (nullable NSString *)groupReadsRefusalForOptions:(TTIOGenomicStreamWriterOptions *)o
+{
+    if (!o.groupReads) return nil;
+    if (o.optLegacyWholeChannel)
+        return @"groupReads needs the blocks_v1 layout, not the legacy whole-channel one";
+    if (o.referenceChromSeqs != nil)
+        return @"groupReads applies to runs without a reference; aligned runs keep "
+               @"coordinate order for REF_DIFF_V2";
+    if (![TTIOSeqGroup nativeAvailable])
+        return @"groupReads requires libttio_rans";
+    return nil;
+}
 + (NSUInteger)channelChunk { return kChannelChunk; }
 
 static NSArray *gIndexFields = nil;
@@ -223,6 +249,10 @@ static void ttioBuildIndexFields(void)
                                @"the quality distribution of platform "
                                @"'%@' (M97).", _opt.platform];
         }
+        NSString *refusal = [[self class] groupReadsRefusalForOptions:_opt];
+        if (refusal != nil) {
+            [NSException raise:NSInvalidArgumentException format:@"%@", refusal];
+        }
         if (_opt.blockReads < 1) _opt.blockReads = 1;
         if (_opt.blockBytes < 1) _opt.blockBytes = 1;
         _pending = [NSMutableArray array];
@@ -230,6 +260,7 @@ static void ttioBuildIndexFields(void)
         _channelDs = [NSMutableDictionary dictionary];
         _idxDs = [NSMutableDictionary dictionary];
         _legacyParts = [NSMutableArray array];
+        _groupParts = [NSMutableArray array];
         _threads = [TTIOThreads resolve:_opt.threads ? @(_opt.threads) : nil];
         _pool = [TTIOThreadPool poolWithThreads:_opt.optLegacyWholeChannel ? 1 : _threads];
         _inflight = [NSMutableArray array];
@@ -378,10 +409,19 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
         if (error) *error = TTIOMakeError(TTIOErrorInvalidArgument, @"genomic stream writer is closed");
         return NO;
     }
+    return [self _append:batch error:error];
+}
+
+- (BOOL)_append:(TTIOWrittenGenomicRun *)batch error:(NSError **)error
+{
     NSUInteger n = batch.readCount;
     if (n == 0) return YES;
     if (_opt.optLegacyWholeChannel) {
         [_legacyParts addObject:batch];
+        return YES;
+    }
+    if (_opt.groupReads && _inputIndex == nil) {
+        [_groupParts addObject:batch];
         return YES;
     }
     NSArray<NSString *> *chroms = batch.chromosomes;
@@ -620,6 +660,21 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
         [_pool close];
         return YES;
     }
+    if (_opt.groupReads) {
+        /* M103: reorder the whole run by sequence, then block it as
+         * usual; each written block appends its slice of the order. */
+        NSArray *parts = [_groupParts copy];
+        [_groupParts removeAllObjects];
+        TTIOWrittenGenomicRun *whole = parts.count ? [TTIOGenomicBlocks concatRuns:parts] : nil;
+        NSData *order = whole ? [TTIOGenomicBlocks groupOrderOfRun:whole error:error] : [NSData data];
+        if (order == nil) { [_pool close]; return NO; }
+        _inputIndex = order;
+        if (whole != nil
+            && ![self _append:[TTIOGenomicBlocks takeRun:whole order:order] error:error]) {
+            [_pool close];
+            return NO;
+        }
+    }
     if (![self _cutBlock:error]) { [_pool close]; return NO; }
     if (![self _drainUntil:0 error:error]) { [_pool close]; return NO; }
     [_pool close];
@@ -690,7 +745,8 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     if (![run setAttributeValue:_opt.sampleName ?: @"" forName:@"sample_name" error:error]) return NO;
     if (![run setAttributeValue:@((int64_t)0) forName:@"read_count" error:error]) return NO;
     if (![run setAttributeValue:@((int64_t)0) forName:@"base_count" error:error]) return NO;
-    if (![run setAttributeValue:kLayout forName:@"layout" error:error]) return NO;
+    if (![run setAttributeValue:(_opt.groupReads ? kLayoutGrouped : kLayout)
+                        forName:@"layout" error:error]) return NO;
     NSString *policy = [NSString stringWithFormat:@"reads=%lu,bytes=%llu",
                         (unsigned long)_opt.blockReads, _opt.blockBytes];
     if (![run setAttributeValue:policy forName:@"block_policy" error:error]) return NO;
@@ -759,6 +815,10 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
         @[@"flags", @(TTIOPrecisionUInt32)],
         @[@"chromosome_ids", @(TTIOPrecisionUInt16)],
     ];
+    if (_opt.groupReads) {
+        // M103: row j holds the input index of the read stored at row j.
+        arrays = [arrays arrayByAddingObject:@[@"input_index", @(TTIOPrecisionUInt32)]];
+    }
     for (NSArray *a in arrays) {
         id<TTIOStorageDataset> ds = [idx createDatasetNamed:a[0]
                                                   precision:(TTIOPrecision)[a[1] integerValue]
@@ -861,6 +921,19 @@ static unsigned long long ppEstimateBlockBytes(TTIOWrittenGenomicRun *b)
     if (![_idxDs[@"mapping_qualities"] appendData:block.mappingQualitiesData error:error]) return NO;
     if (![_idxDs[@"flags"] appendData:block.flagsData error:error]) return NO;
     if (![_idxDs[@"chromosome_ids"] appendData:ids error:error]) return NO;
+    if (_opt.groupReads) {
+        /* Blocks are written in order, so this block's rows start at the
+         * reads written so far. */
+        NSUInteger r0 = (NSUInteger)_readCount;
+        if ((r0 + n) * sizeof(uint32_t) > _inputIndex.length) {
+            if (error) *error = TTIOMakeError(TTIOErrorInvalidArgument,
+                @"grouped block past the end of input_index");
+            return NO;
+        }
+        NSData *slice = [_inputIndex subdataWithRange:NSMakeRange(r0 * sizeof(uint32_t),
+                                                                 n * sizeof(uint32_t))];
+        if (![_idxDs[@"input_index"] appendData:slice error:error]) return NO;
+    }
     return YES;
 }
 

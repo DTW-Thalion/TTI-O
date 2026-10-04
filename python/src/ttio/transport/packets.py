@@ -97,6 +97,11 @@ TRANSPORT_V0_11_FEATURE = "transport_v0_11"
 # feature flags. Receivers without sidecar support cannot rebuild a
 # restorable container from such a stream (no opt_ prefix → required).
 TRANSPORT_BLOCKS_V1_FEATURE = "transport_blocks_v1"
+#: Required StreamHeader token (transport-spec v0.13) when a run in the
+#: stream has the blocks_v1_grouped layout: its BlockSidecars end with the
+#: block's slice of genomic_index/input_index (M103). Wire-scoped, like
+#: transport_blocks_v1.
+TRANSPORT_BLOCKS_V1_GROUPED_FEATURE = "transport_blocks_v1_grouped"
 
 
 class PacketFlag(IntFlag):

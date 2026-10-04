@@ -46,6 +46,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="sequence bytes per blocks_v1 block (default 256 MiB)")
     p.add_argument("--legacy-whole-channel", action="store_true",
                    help="write the v1.8 whole-channel layout (memory-unbounded)")
+    p.add_argument("--group-reads", action="store_true",
+                   help="reorder the reads by sequence before blocking and store the "
+                        "permutation (blocks_v1_grouped; memory-unbounded)")
     return p
 
 
@@ -81,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         src.block_reads = args.block_reads
         src.block_bytes = args.block_bytes
         src.opt_legacy_whole_channel = args.legacy_whole_channel
+        src.group_reads = args.group_reads
         src.read_role = args.read_role
         SpectralDataset.write_minimal(
             args.out,

@@ -410,7 +410,9 @@ static TTIOImportedDataset *_ofrBuildGenomicDraft(TTIOBamReader *reader,
                        progress:progress]
             sourceWithBlockReads:_ofrOptNumber(opts, @"block_reads")
                       blockBytes:_ofrOptNumber(opts, @"block_bytes")
-                          legacy:_ofrOptFlag(opts, @"legacy_whole_channel")];
+                          legacy:_ofrOptFlag(opts, @"legacy_whole_channel")
+                      // M103; the cross-language CLIs pass "1"/"0".
+                      groupReads:_ofrOptFlag(opts, @"group_reads")];
     TTIOImportedDataset *d = [[TTIOImportedDataset alloc] init];
     d.genomicStreams[name] = src;
     return d;

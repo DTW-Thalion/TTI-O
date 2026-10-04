@@ -127,6 +127,8 @@ class _GenomicReader:
         src.block_reads = opts.get("block_reads")
         src.block_bytes = opts.get("block_bytes")
         src.opt_legacy_whole_channel = bool(opts.get("legacy_whole_channel", False))
+        # M103; the cross-language CLIs pass "1"/"0" strings.
+        src.group_reads = str(opts.get("group_reads", "0")).strip().lower() in ("1", "true", "yes")
         return ImportedDataset(genomic_streams={name: src})
 
 

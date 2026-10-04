@@ -73,9 +73,17 @@
  *  first access under blocks_v1. */
 @property (readonly, strong) TTIOGenomicIndex *index;
 
-/** <code>blocks_v1</code> or <code>whole</code> (the v1.8 whole-channel
- *  layout). */
+/** <code>blocks_v1</code>, <code>blocks_v1_grouped</code> (reads stored
+ *  grouped by sequence, M103) or <code>whole</code> (the v1.8
+ *  whole-channel layout). */
 @property (readonly, copy) NSString *layout;
+
+/** For a <code>blocks_v1_grouped</code> run, uint32 per read: entry j is
+ *  the input index of the read stored at row j; nil otherwise. Every
+ *  per-read, index and bulk accessor already presents input order; this
+ *  maps the stored rows that <code>-iterBlocksFrom:...</code> reports
+ *  (<code>firstRead + k</code>). Python: <code>input_index</code>. */
+@property (readonly, nullable) NSData *inputIndex;
 
 /** Number of blocks; 1 for a whole-channel run. */
 @property (readonly) NSUInteger blockCount;

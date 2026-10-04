@@ -171,6 +171,11 @@ public final class RunSelection {
         List<String> mateChroms  = new ArrayList<>(n);
         long[] matePos   = new long[n];
         int[]  tlens     = new int[n];
+        // A grouped run (M103) presents input order everywhere, but its
+        // per-read accessors hop between stored blocks: walk its
+        // input-order iterator instead, which decodes each block once.
+        java.util.Iterator<global.thalion.ttio.genomics.AlignedRead> grouped =
+            "blocks_v1_grouped".equals(run.layout()) ? run.iterReads() : null;
         for (int i = 0; i < n; i++) {
             positions[i] = idx.positionAt(i);
             mapqs[i]     = (byte) idx.mappingQualityAt(i);
@@ -178,6 +183,15 @@ public final class RunSelection {
             offsets[i]   = idx.offsetAt(i);
             lengths[i]   = idx.lengthAt(i);
             chromosomes.add(idx.chromosomeAt(i));
+            if (grouped != null) {
+                global.thalion.ttio.genomics.AlignedRead r = grouped.next();
+                readNames.add(r.readName());
+                cigars.add(r.cigar());
+                mateChroms.add(r.mateChromosome());
+                matePos[i] = r.matePosition();
+                tlens[i]   = r.templateLength();
+                continue;
+            }
             readNames.add(run.readNameAt(i));
             cigars.add(run.cigarAt(i));
             mateChroms.add(run.mateChromAt(i));

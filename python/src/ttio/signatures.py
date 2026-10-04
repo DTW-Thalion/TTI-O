@@ -222,6 +222,8 @@ _GENOMIC_SIGNAL_CHANNELS = ("sequences", "qualities", "tags")
 _GENOMIC_INDEX_COLUMNS = (
     "offsets", "lengths", "positions", "mapping_qualities", "flags",
     "chromosome_ids", "chromosome_names",
+    # blocks_v1_grouped only (M103): the permutation back to input order.
+    "input_index",
 )
 
 

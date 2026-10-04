@@ -23,6 +23,7 @@
  *                      [--min-votes V] [--seed-votes V] [--fill] [--mates]
  *                      [--scaffold [--scaffold-min N] [--cluster-cap BASES]]
  *                      | --layout ... | --as-is]
+ *                     [--lib]   (ttio_seq_group from the library, defaults)
  *                     [--pos POSITIONS] [--dump-order FILE] [--no-code]
  *                     [k1 [k2 [k3]]] < reads.fastq
  */
@@ -956,7 +957,7 @@ int main(int argc, char **argv)
     memset(&c, 0, sizeof c);
     ttio_seq_cm_default_params(&c.p);
     unsigned long long block_bases = 64ull << 20;
-    int ai = 1, n_orders = 0, group = 0, chain = 0, layout = 0, oracle_sort = 0, as_is = 0, no_code = 0, pairs = 0, group_k = 20, group_w = 0;
+    int ai = 1, n_orders = 0, group = 0, chain = 0, lib = 0, layout = 0, oracle_sort = 0, as_is = 0, no_code = 0, pairs = 0, group_k = 20, group_w = 0;
     unsigned max_occ = 256;
     const char *pos_path = NULL;  /* diagnostic: one mapping position per read, input order */
     const char *dump_path = NULL; /* diagnostic: write the grouped order, one input index per line */
@@ -966,6 +967,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[ai], "--no-rc")) c.p.flags = 0;
         else if (!strcmp(argv[ai], "--group")) group = 1;
         else if (!strcmp(argv[ai], "--chain")) group = chain = 1;
+        else if (!strcmp(argv[ai], "--lib")) group = lib = 1;
         else if (!strcmp(argv[ai], "--layout")) group = chain = layout = 1;
         else if (!strcmp(argv[ai], "--as-is")) group = as_is = 1;
         else if (!strcmp(argv[ai], "--no-code")) no_code = 1;
@@ -997,6 +999,11 @@ int main(int argc, char **argv)
     uint8_t *seq = malloc(cap);
     uint64_t *len = malloc(rcap * sizeof *len);
     uint64_t *names = g_mates ? malloc(rcap * sizeof *names) : NULL;
+    /* --lib: the raw names (no '@', no newline) for ttio_seq_group. */
+    size_t rncap = lib ? (size_t)1 << 24 : 0, rnused = 0;
+    char *rawnames = lib ? malloc(rncap) : NULL;
+    uint64_t *rnoff = lib ? malloc(rcap * sizeof *rnoff) : NULL;
+    if (rnoff) rnoff[0] = 0;
     char *line = NULL;
     size_t lcap = 0;
     ssize_t l;
@@ -1006,6 +1013,13 @@ int main(int argc, char **argv)
     while (!done) {
         l = getline(&line, &lcap, stdin);
         if (l > 0 && (ln & 3) == 0 && names) names[n] = name_hash(line, l);
+        if (l > 0 && (ln & 3) == 0 && rawnames) {
+            ssize_t e = l;
+            while (e > 1 && (line[e - 1] == '\n' || line[e - 1] == '\r')) e--;
+            while (rnused + (size_t)e > rncap) { rncap *= 2; rawnames = realloc(rawnames, rncap); }
+            memcpy(rawnames + rnused, line + 1, (size_t)(e - 1));
+            rnused += (size_t)(e - 1);
+        }
         if (l > 0 && (ln++ & 3) == 1) {
             while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) l--;
             while (used + (size_t)l > cap) { cap *= 2; seq = realloc(seq, cap); }
@@ -1013,10 +1027,12 @@ int main(int argc, char **argv)
                 rcap *= 2;
                 len = realloc(len, rcap * sizeof *len);
                 if (names) names = realloc(names, rcap * sizeof *names);
+                if (rnoff) rnoff = realloc(rnoff, rcap * sizeof *rnoff);
             }
             memcpy(seq + used, line, (size_t)l);
             used += (size_t)l;
             len[n++] = (uint64_t)l;
+            if (rnoff) rnoff[n] = rnused;
         }
         if (l <= 0) done = 1;
         if (!group && (used >= block_bases || done) && n) {
@@ -1036,6 +1052,15 @@ int main(int argc, char **argv)
         uint64_t *order = malloc(n_units * sizeof *order);
         if (as_is) {
             for (size_t u = 0; u < n_units; u++) order[u] = u;
+        } else if (lib) {
+            /* The library's grouping (native/src/seq_group.c), defaults:
+             * the same as --chain --fill --mates. */
+            uint32_t *o32 = malloc((n ? n : 1) * sizeof *o32);
+            int rc = ttio_seq_group(seq, len, n, (const uint8_t *)rawnames, rnoff, NULL, o32);
+            if (rc) { fprintf(stderr, "ttio_seq_group failed: %d\n", rc); return 1; }
+            for (size_t u = 0; u < n; u++) order[u] = o32[u];
+            free(o32);
+            printf("lib: ttio_seq_group defaults\n");
         } else if (chain) {
             if (group_w == 0) group_w = auto_window(len, n);
             if (pos_path) g_pos = load_positions(pos_path, n);

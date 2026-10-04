@@ -438,7 +438,7 @@ visitDatasetHeaderWithDatasetId:did
     }
 
     // ── 3. AccessUnits ────────────────────────────────────────────
-    uint32_t emitted = 0;
+    __block uint32_t emitted = 0;
     uint32_t maxAU = filter.maxAU ? filter.maxAU.unsignedIntValue : UINT32_MAX;
     did = 1;
     BOOL hasAccessUnitVisitor = [visitor respondsToSelector:
@@ -498,7 +498,12 @@ visitDatasetHeaderWithDatasetId:did
         const uint8_t *seqBytes  = seqAll.bytes;
         const uint8_t *qualBytes = qualAll.bytes;
         NSUInteger qualLenTotal = qualAll.length;
-        for (NSUInteger i = 0; i < nReads && emitted < maxAU; i++) {
+        // Reads in input order, like the index and bulk channels above;
+        // the sequential walk decodes each block once, also for a
+        // grouped run (M103).
+        [grun iterReadsFrom:0 to:nReads error:NULL
+                 usingBlock:^(TTIOAlignedRead *r, NSUInteger i, BOOL *stopIter) {
+            if (emitted >= maxAU) { *stopIter = YES; return; }
             uint64_t offset = gIdx ? [gIdx offsetAt:i] : 0;
             uint32_t length = gIdx ? [gIdx lengthAt:i] : 0;
             NSData *seqData = (length > 0)
@@ -511,15 +516,12 @@ visitDatasetHeaderWithDatasetId:did
             } else {
                 qualData = [NSData data];
             }
-            NSError *readErr = nil;
-            TTIOAlignedRead *r = [grun readAtIndex:i error:&readErr];
-            if (!r) continue;
             NSString *nameStr = (i < namesAll.count)
                 ? namesAll[i] : (r.readName ?: @"");
             TTIOAccessUnit *au =
                 accessUnitFromGenomicRead(grun, i, r, seqData, qualData,
                                           nameStr, seqCodec, qualCodec);
-            if (filter && ![filter matches:au datasetId:did]) continue;
+            if (filter && ![filter matches:au datasetId:did]) return;
             if (hasAccessUnitVisitor) {
                 [visitor walker:self
                 visitAccessUnit:au
@@ -527,7 +529,7 @@ visitDatasetHeaderWithDatasetId:did
                      auSequence:(uint32_t)i];
             }
             emitted++;
-        }
+        }];
         did++;
     }
 

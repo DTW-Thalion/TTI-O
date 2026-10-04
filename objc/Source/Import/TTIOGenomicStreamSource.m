@@ -36,12 +36,24 @@
                           blockBytes:(NSNumber *)blockBytes
                               legacy:(BOOL)legacy
 {
-    return [[TTIOGenomicStreamSource alloc] initWithName:_name batches:_batches
-                                          referenceFasta:_referenceFasta
-                                          embedReference:_embedReference
-                                              blockReads:blockReads
-                                              blockBytes:blockBytes
-                                   optLegacyWholeChannel:legacy];
+    return [self sourceWithBlockReads:blockReads blockBytes:blockBytes
+                               legacy:legacy groupReads:_groupReads];
+}
+
+- (instancetype)sourceWithBlockReads:(NSNumber *)blockReads
+                          blockBytes:(NSNumber *)blockBytes
+                              legacy:(BOOL)legacy
+                          groupReads:(BOOL)groupReads
+{
+    TTIOGenomicStreamSource *s =
+        [[TTIOGenomicStreamSource alloc] initWithName:_name batches:_batches
+                                       referenceFasta:_referenceFasta
+                                       embedReference:_embedReference
+                                           blockReads:blockReads
+                                           blockBytes:blockBytes
+                                optLegacyWholeChannel:legacy];
+    s->_groupReads = groupReads;
+    return s;
 }
 
 - (NSUInteger)writeIntoStudy:(id<TTIOStorageGroup>)study
@@ -66,6 +78,14 @@
             if (self->_blockReads) o.blockReads = [self->_blockReads unsignedIntegerValue];
             if (self->_blockBytes) o.blockBytes = [self->_blockBytes unsignedLongLongValue];
             if (self->_optLegacyWholeChannel) o.optLegacyWholeChannel = YES;
+            if (self->_groupReads) o.groupReads = YES;
+            NSString *refusal = [TTIOGenomicStreamWriter groupReadsRefusalForOptions:o];
+            if (refusal != nil) {
+                if (innerError) *innerError = [NSError errorWithDomain:@"TTIOGenomicStreamSource"
+                    code:1 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:
+                        @"genomic run '%@': %@", self->_name, refusal]}];
+                return NO;
+            }
             /* Same rule as the producer side, so the two halves of the
              * budget are sized off one count rather than two. */
             if (o.threads == 0) o.threads = [TTIOThreads resolveImportThreads];

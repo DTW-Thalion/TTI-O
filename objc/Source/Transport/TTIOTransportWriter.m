@@ -1378,17 +1378,15 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
     // per-AU codec framing dominates short strings.
     uint8_t seqCodec = [run wireCompressionForChannel:@"sequences"];
     uint8_t qualCodec = [run wireCompressionForChannel:@"qualities"];
-    for (NSUInteger i = 0; i < nReads; i++) {
-        NSError *readErr = nil;
-        TTIOAlignedRead *r = [run readAtIndex:i error:&readErr];
-        if (!r) {
-            if (error) *error = readErr ?: [NSError errorWithDomain:TTIOTransportErrorDomain
-                                                                code:TTIOTransportErrorUnexpectedPayload
-                                                            userInfo:@{NSLocalizedDescriptionKey:
-                                  [NSString stringWithFormat:@"writeGenomicRun: failed to materialise read %lu",
-                                      (unsigned long)i]}];
-            return NO;
-        }
+    // Reads in input order, like the index; the sequential walk decodes
+    // each block once, also for a grouped run (M103).
+    __block BOOL auOk = YES;
+    __block NSError *auErr = nil;
+    __block NSUInteger delivered = 0;
+    NSError *iterErr = nil;
+    BOOL iterOk = [run iterReadsFrom:0 to:nReads error:&iterErr
+                          usingBlock:^(TTIOAlignedRead *r, NSUInteger i, BOOL *stopIter) {
+        delivered++;
         NSData *seqData = [r.sequence dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
         NSData *qualData = r.qualities ?: [NSData data];
         uint32_t seqLen = (uint32_t)seqData.length;
@@ -1473,9 +1471,24 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                                     flags:flags
                                              matePosition:r.matePosition
                                            templateLength:r.templateLength];
-        if (![self writeAccessUnit:au datasetId:datasetId auSequence:(uint32_t)i error:error]) {
-            return NO;
+        NSError *we = nil;
+        if (![self writeAccessUnit:au datasetId:datasetId auSequence:(uint32_t)i error:&we]) {
+            auOk = NO;
+            auErr = we;
+            *stopIter = YES;
         }
+    }];
+    if (!auOk) {
+        if (error) *error = auErr;
+        return NO;
+    }
+    if (!iterOk || delivered != nReads) {
+        if (error) *error = iterErr ?: [NSError errorWithDomain:TTIOTransportErrorDomain
+                                                            code:TTIOTransportErrorUnexpectedPayload
+                                                        userInfo:@{NSLocalizedDescriptionKey:
+                              [NSString stringWithFormat:@"writeGenomicRun: failed to materialise read %lu",
+                                  (unsigned long)delivered]}];
+        return NO;
     }
     return [self writeEndOfDatasetWithDatasetId:datasetId
                                 finalAUSequence:(uint32_t)nReads
@@ -1767,7 +1780,14 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
         const uint8_t *seqBytes  = seqAll.bytes;
         const uint8_t *qualBytes = qualAll.bytes;
         NSUInteger qualLenTotal = qualAll.length;
-        for (NSUInteger i = 0; i < nReads; i++) {
+        // Reads in input order, like the index and the bulk channels
+        // above; the sequential walk decodes each block once, also for
+        // a grouped run (M103), whose AUs go out in input order.
+        __block BOOL auOk = YES;
+        __block NSError *auErr = nil;
+        NSError *iterErr = nil;
+        BOOL iterOk = [grun iterReadsFrom:0 to:nReads error:&iterErr
+                               usingBlock:^(TTIOAlignedRead *r, NSUInteger i, BOOL *stopIter) {
             uint64_t offset = idx ? [idx offsetAt:i] : 0;
             uint32_t length = idx ? [idx lengthAt:i] : 0;
             NSData *seqData = (length > 0)
@@ -1781,16 +1801,10 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                 qualData = [NSData data];
             }
             // cigar / mateChromosome / matePosition / templateLength
-            // still flow through readAtIndex — those decoders cache
-            // after first call so per-record cost is amortised. The
-            // savings here are skipping the byteChannelSliceNamed
-            // work + NSString alloc for the seq channel.
-            NSError *readErr = nil;
-            TTIOAlignedRead *r = [grun readAtIndex:i error:&readErr];
-            if (!r) {
-                if (error) *error = readErr;
-                return NO;
-            }
+            // still come from the decoded read — those decoders cache
+            // per block so per-record cost is amortised. The savings
+            // here are skipping the byteChannelSliceNamed work +
+            // NSString alloc for the seq channel.
             uint32_t seqLen = (uint32_t)seqData.length;
             uint32_t qualLen = (uint32_t)qualData.length;
             NSData *seqPayload = applyWireCodecGenomic(seqData, seqCodec);
@@ -1866,9 +1880,16 @@ static NSData *applyWireCodecGenomic(NSData *plaintext, uint8_t codec)
                                                         flags:flags
                                                  matePosition:r.matePosition
                                                templateLength:r.templateLength];
-            if (![self writeAccessUnit:au datasetId:did auSequence:(uint32_t)i error:error]) {
-                return NO;
+            NSError *we = nil;
+            if (![self writeAccessUnit:au datasetId:did auSequence:(uint32_t)i error:&we]) {
+                auOk = NO;
+                auErr = we;
+                *stopIter = YES;
             }
+        }];
+        if (!iterOk || !auOk) {
+            if (error) *error = auOk ? iterErr : auErr;
+            return NO;
         }
         if (![self writeEndOfDatasetWithDatasetId:did
                                   finalAUSequence:(uint32_t)nReads

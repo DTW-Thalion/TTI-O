@@ -232,6 +232,10 @@ class GenomicRun:
     _block_cache: "tuple[int, GenomicRun] | None" = field(default=None, repr=False, compare=False)
     _blocks_materialised: int = field(default=0, repr=False, compare=False)
     _name_tables: "tuple[list, list | None] | None" = field(default=None, repr=False, compare=False)
+    # blocks_v1_grouped (M103): row j's input index, and its inverse
+    # (input index -> stored row). None for every other layout.
+    _input_index: "np.ndarray | None" = field(default=None, repr=False, compare=False)
+    _stored_of: "np.ndarray | None" = field(default=None, repr=False, compare=False)
 
     # ------------------------------------------------------------------
     # Sequence protocol
@@ -245,8 +249,17 @@ class GenomicRun:
 
     @property
     def layout(self) -> str:
-        """``"blocks_v1"`` or ``"whole"`` (the v1.8 whole-channel layout)."""
-        return self._layout
+        """``"blocks_v1"``, ``"blocks_v1_grouped"`` (reads stored grouped by
+        sequence, M103) or ``"whole"`` (the v1.8 whole-channel layout)."""
+        return "blocks_v1_grouped" if self._input_index is not None else self._layout
+
+    @property
+    def input_index(self) -> "np.ndarray | None":
+        """For a ``blocks_v1_grouped`` run, entry ``j`` is the input index
+        of the read stored at row ``j``; ``None`` otherwise. Every read
+        accessor already presents input order; this maps the stored rows
+        that :meth:`for_each_block` reports (``first_read + k``)."""
+        return self._input_index
 
     @property
     def block_count(self) -> int:
@@ -269,6 +282,9 @@ class GenomicRun:
         if self._layout != "blocks_v1":
             for i in range(max(start, 0), stop):
                 yield self[i]
+            return
+        if self._stored_of is not None:
+            yield from self._iter_grouped(max(start, 0), stop)
             return
         from ._threads import resolve_threads, pool_context
         t = self._block_table
@@ -314,6 +330,33 @@ class GenomicRun:
                     yield view[j - r0]
                 i = b_end
                 b += 1
+
+    #: Input-order reads gathered per pass of a grouped run (M103).
+    _GROUPED_CHUNK = 1 << 22
+
+    def _iter_grouped(self, start: int, stop: int) -> Iterator[AlignedRead]:
+        """Reads ``[start, stop)`` of a grouped run in input order. Each pass
+        gathers up to ``_GROUPED_CHUNK`` input-order reads: their stored
+        rows are visited block by block, each block decoded once per pass,
+        and the reads are yielded in input order. A pass holds its reads in
+        memory; a range of a few blocks' worth decodes only those blocks."""
+        t = self._block_table
+        for c0 in range(start, stop, self._GROUPED_CHUNK):
+            c1 = min(stop, c0 + self._GROUPED_CHUNK)
+            rows = self._stored_of[c0:c1].astype(np.int64)
+            by_row = np.argsort(rows, kind="stable")
+            out: list = [None] * (c1 - c0)
+            k = 0
+            while k < len(by_row):
+                s = int(rows[by_row[k]])
+                b = t.block_for(s)
+                r0 = int(t.read_start[b])
+                r1 = r0 + int(t.n_reads[b])
+                view = self._block_view(b)
+                while k < len(by_row) and int(rows[by_row[k]]) < r1:
+                    out[by_row[k]] = view[int(rows[by_row[k]]) - r0]
+                    k += 1
+            yield from out
 
     def _block_window(self, nthreads: int, b_first: int, b_last: int) -> int:
         """How many blocks may be in flight at once, given how many
@@ -526,8 +569,9 @@ class GenomicRun:
             )
 
         if self._layout == "blocks_v1":
-            b = self._block_table.block_for(i)
-            return self._block_view(b)[i - int(self._block_table.read_start[b])]
+            s = int(self._stored_of[i]) if self._stored_of is not None else i
+            b = self._block_table.block_for(s)
+            return self._block_view(b)[s - int(self._block_table.read_start[b])]
         offset = int(self.index.offsets[i])
         length = int(self.index.lengths[i])
 
@@ -623,17 +667,33 @@ class GenomicRun:
 
         layout = io.read_string_attr(sgroup, "layout") or "whole"
         block_table = None
+        input_index = stored_of = None
         idx_group = sgroup.open_group("genomic_index")
-        if layout == "blocks_v1":
+        if layout in ("blocks_v1", "blocks_v1_grouped"):
             # blocks_v1: the block table is small; the per-read index
             # arrays load lazily on first use (format-spec 10.12).
             from .genomic._block_view import BlockTable, LazyGenomicIndex
             block_table = BlockTable.read(sgroup)
-            index = LazyGenomicIndex(idx_group, block_table)
+            if layout == "blocks_v1_grouped":
+                # M103: reads are stored grouped by sequence; input_index
+                # restores input order (format-spec 10.12.7).
+                input_index = np.asarray(idx_group.open_dataset("input_index").read(),
+                                         dtype=np.uint32)
+                n = block_table.read_count
+                if input_index.shape[0] != n or (n and (
+                        int(input_index.max()) >= n
+                        or np.bincount(input_index, minlength=n).max() != 1)):
+                    raise ValueError(f"genomic run {name!r}: input_index is not a "
+                                     f"permutation of its {n} reads")
+                stored_of = np.empty(n, dtype=np.uint32)
+                stored_of[input_index] = np.arange(n, dtype=np.uint32)
+                layout = "blocks_v1"
+            index = LazyGenomicIndex(idx_group, block_table, stored_of)
         elif layout != "whole":
             raise ValueError(
                 f"genomic run {name!r}: unsupported layout {layout!r} "
-                "(this reader knows the whole-channel layout and blocks_v1)")
+                "(this reader knows the whole-channel layout, blocks_v1 and "
+                "blocks_v1_grouped)")
         else:
             # Eager: load the genomic index.
             index = GenomicIndex.read(idx_group)
@@ -666,6 +726,8 @@ class GenomicRun:
             _bulk_read=bulk_read,
             _layout=layout,
             _block_table=block_table,
+            _input_index=input_index,
+            _stored_of=stored_of,
         )
 
     # ------------------------------------------------------------------

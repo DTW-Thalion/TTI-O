@@ -34,6 +34,11 @@ from .._threads import (resolve_threads, pool_context,
 from . import _blocks
 
 LAYOUT = "blocks_v1"
+#: blocks_v1 with the reads reordered by sequence and
+#: ``genomic_index/input_index`` restoring input order (M103). A distinct
+#: value so readers that predate it refuse the run rather than read it
+#: in stored order (format-spec 10.12.7).
+LAYOUT_GROUPED = "blocks_v1_grouped"
 DEFAULT_BLOCK_READS = 1_000_000
 # A block is the unit of encode concurrency and of residency, so a
 # big one costs both: the pool cannot start a block that is still
@@ -87,6 +92,9 @@ _INDEX_ARRAYS = (
     ("flags", Precision.UINT32, np.uint32),
     ("chromosome_ids", Precision.UINT16, np.uint16),
 )
+#: The grouped layout's extra column: row j holds the input index of the
+#: read stored at row j (M103).
+_INPUT_INDEX = (("input_index", Precision.UINT32, np.uint32),)
 
 
 def register_block_chromosomes(block: WrittenGenomicRun, chrom_map: dict) -> None:
@@ -128,7 +136,8 @@ class GenomicStreamWriter:
                  threads: int | None = None,
                  memory_budget_bytes: int | None = None,
                  read_role: str | None = None,
-                 ref_diff_slice_bytes: int = 0):
+                 ref_diff_slice_bytes: int = 0,
+                 group_reads: bool = False):
         self._study = study_group
         self._provenance = list(provenance_records or [])
         self._name = run_name
@@ -161,6 +170,20 @@ class GenomicStreamWriter:
         self._block_reads = int(block_reads)
         self._block_bytes = int(block_bytes)
         self._legacy = bool(opt_legacy_whole_channel)
+        # M103: buffer the whole run, reorder it by sequence at close,
+        # then block it as usual (format-spec 10.12.7).
+        self._group = bool(group_reads)
+        if self._group and self._legacy:
+            raise ValueError("group_reads needs the blocks_v1 layout, not the legacy whole-channel one")
+        if self._group and reference_chrom_seqs is not None:
+            raise ValueError("group_reads applies to runs without a reference; aligned "
+                             "runs keep coordinate order for REF_DIFF_V2")
+        if self._group:
+            from ..codecs import seq_group as _sg
+            if not _sg.HAVE_NATIVE_LIB:
+                raise RuntimeError("group_reads requires libttio_rans (set TTIO_RANS_LIB_PATH)")
+        self._group_parts: list[WrittenGenomicRun] = []
+        self._input_index: np.ndarray | None = None
         self._pending: list[WrittenGenomicRun] = []
         self._pending_reads = 0
         self._pending_bytes = 0
@@ -240,11 +263,17 @@ class GenomicStreamWriter:
         ignored; the writer's own applies)."""
         if self._closed:
             raise RuntimeError("writer is closed")
+        self._append(batch)
+
+    def _append(self, batch: WrittenGenomicRun) -> None:
         n = int(len(batch.lengths))
         if n == 0:
             return
         if self._legacy:
             self._legacy_parts.append(batch)
+            return
+        if self._group and self._input_index is None:
+            self._group_parts.append(batch)
             return
         # A block never spans two chromosomes: REF_DIFF_V2 encodes one
         # chromosome per blob, and a coordinate-sorted BAM streams
@@ -403,6 +432,13 @@ class GenomicStreamWriter:
                 self._read_count = int(len(whole.lengths))
             self._legacy_parts = []
             return
+        if self._group:
+            parts, self._group_parts = self._group_parts, []
+            whole = _blocks.concat_runs(parts) if parts else None
+            order = _blocks.group_order(whole) if whole is not None else np.zeros(0, np.uint32)
+            self._input_index = order
+            if whole is not None:
+                self._append(_blocks.take_run(whole, order))
         self.flush()
         if self._rg is None:
             self._ensure_layout(None)
@@ -449,7 +485,7 @@ class GenomicStreamWriter:
         io.write_fixed_string_attr(rg, "sample_name", m["sample_name"])
         io.write_int_attr(rg, "read_count", 0)
         io.write_int_attr(rg, "base_count", 0)
-        io.write_fixed_string_attr(rg, "layout", LAYOUT)
+        io.write_fixed_string_attr(rg, "layout", LAYOUT_GROUPED if self._group else LAYOUT)
         io.write_fixed_string_attr(
             rg, "block_policy", f"reads={self._block_reads},bytes={self._block_bytes}")
         # Persist non-default writer policy that shapes the coded
@@ -488,7 +524,7 @@ class GenomicStreamWriter:
             "index", INDEX_FIELDS_WITH_TAGS if self._with_tags else INDEX_FIELDS,
             0, extendable=True, chunk_rows=1024)
         idx_group = rg.create_group("genomic_index")
-        for name, prec, _ in _INDEX_ARRAYS:
+        for name, prec, _ in _INDEX_ARRAYS + (_INPUT_INDEX if self._group else ()):
             self._idx[name] = idx_group.create_dataset(
                 name, prec, 0, chunk_size=io.DEFAULT_SIGNAL_CHUNK,
                 compression=Compression.ZLIB, compression_level=6, extendable=True)
@@ -549,6 +585,12 @@ class GenomicStreamWriter:
         }
         for name, _, dt in _INDEX_ARRAYS:
             self._idx[name].append(arrays[name].astype(dt, copy=False))
+        if self._group:
+            # Blocks are written in order, so this block's rows start at
+            # the reads written so far.
+            r0 = self._read_count
+            self._idx["input_index"].append(
+                self._input_index[r0:r0 + len(block.lengths)].astype(np.uint32, copy=False))
 
     def _write_close_tables(self) -> None:
         names = sorted(self._chrom_map, key=self._chrom_map.get)

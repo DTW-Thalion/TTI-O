@@ -174,6 +174,14 @@ NS_ASSUME_NONNULL_BEGIN
  *  <code>optLegacyWholeChannel</code>. Defaults to NO. */
 @property (nonatomic) BOOL optLegacyWholeChannel;
 
+/** M103: reorder the reads by sequence before blocking and store the
+ *  permutation (layout <code>blocks_v1_grouped</code>, format-spec
+ *  10.12.7). Only for runs without a reference; readers present input
+ *  order. Memory is then unbounded in the run size. Python:
+ *  <code>opt_group_reads</code>; Java: <code>optGroupReads</code>.
+ *  Defaults to NO. */
+@property (nonatomic) BOOL optGroupReads;
+
 /** A copy of this run with a different per-channel codec map. Every
  *  other field, including the mutable options, is carried over. */
 - (instancetype)copyWithSignalCodecOverrides:(NSDictionary<NSString *, NSNumber *> *)overrides;

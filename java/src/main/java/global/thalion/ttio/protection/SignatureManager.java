@@ -256,7 +256,9 @@ public final class SignatureManager {
      *  are signed in place of the old single column. */
     private static final String[] GENOMIC_INDEX_COLUMNS = {
         "offsets", "lengths", "positions", "mapping_qualities", "flags",
-        "chromosome_ids", "chromosome_names"
+        "chromosome_ids", "chromosome_names",
+        // blocks_v1_grouped only (M103): the permutation back to input order.
+        "input_index"
     };
 
     /** sign every signal channel and every genomic_index

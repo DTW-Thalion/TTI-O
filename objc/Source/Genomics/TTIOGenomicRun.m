@@ -169,6 +169,13 @@ static NSUInteger TTIOReadAheadBlocks(void)
     BOOL _viewResolverBuilt;
     NSArray<NSString *> *_chromNamesTable;
     NSArray<NSString *> *_mateChromNamesTable;
+    // blocks_v1_grouped (M103): row j's input index, and its inverse
+    // (input index -> stored row), uint32 each. nil for every other
+    // layout. _storedIndex is the on-disk (stored-order) index, loaded
+    // on first use by the bulk accessors.
+    NSData *_inputIndex;
+    NSData *_storedOf;
+    TTIOGenomicIndex *_storedIndex;
 }
 
 @synthesize index = _index;
@@ -181,13 +188,39 @@ static NSUInteger TTIOReadAheadBlocks(void)
 - (TTIOGenomicIndex *)index
 {
     if (_index == nil) {
-        id<TTIOStorageGroup> ig = [_group openGroupNamed:@"genomic_index" error:NULL];
-        if (ig) _index = [TTIOGenomicIndex readFromGroup:ig error:NULL];
+        if (_storedOf != nil) {
+            // M103: the index in input order, offsets recomputed.
+            TTIOGenomicIndex *stored = [self _storedIndex];
+            _index = stored ? [stored indexPermutedBy:_storedOf] : nil;
+        } else {
+            id<TTIOStorageGroup> ig = [_group openGroupNamed:@"genomic_index" error:NULL];
+            if (ig) _index = [TTIOGenomicIndex readFromGroup:ig error:NULL];
+        }
     }
     return _index;
 }
 
+/* The on-disk index of a grouped run, in stored order. */
+- (TTIOGenomicIndex *)_storedIndex
+{
+    if (_storedIndex == nil) {
+        id<TTIOStorageGroup> ig = [_group openGroupNamed:@"genomic_index" error:NULL];
+        if (ig) _storedIndex = [TTIOGenomicIndex readFromGroup:ig error:NULL];
+    }
+    return _storedIndex;
+}
+
 - (NSString *)layout { return _layout ?: @"whole"; }
+
+- (NSData *)inputIndex { return _inputIndex; }
+
+/* The stored row of input read i (i itself for an ungrouped run, and
+ * for an out-of-range i, which the block lookup then rejects). */
+- (NSUInteger)_storedRow:(NSUInteger)i
+{
+    if (_storedOf == nil || i >= _storedOf.length / sizeof(uint32_t)) return i;
+    return ((const uint32_t *)_storedOf.bytes)[i];
+}
 
 - (NSUInteger)blockCount { return _blockTable ? _blockTable.count : 1; }
 
@@ -320,7 +353,7 @@ static NSUInteger TTIOReadAheadBlocks(void)
     NSUInteger n = [self readCount];
     NSUInteger hi = MIN(stop, n);
     NSUInteger nthreads = threads ? threads : [TTIOThreads resolve:nil];
-    if (!_blockTable || nthreads <= 1 || start >= hi) {
+    if (!_blockTable || nthreads <= 1 || start >= hi || _storedOf != nil) {
         return [self iterReadsFrom:start to:hi error:error usingBlock:block];
     }
     NSUInteger window = MIN(nthreads, TTIOReadAheadBlocks());
@@ -623,6 +656,7 @@ static NSUInteger TTIOReadAheadBlocks(void)
     NSUInteger n = [self readCount];
     stop = MIN(stop, n);
     __block BOOL halted = NO;
+    if (_storedOf != nil) return [self _iterGroupedFrom:start to:stop error:error usingBlock:block];
     if (_blockTable) {
         __block NSError *inner = nil;
         TTIOBlockTable *table = _blockTable;
@@ -643,6 +677,65 @@ static NSUInteger TTIOReadAheadBlocks(void)
         TTIOAlignedRead *r = [self readAtIndex:i error:error];
         if (!r) return NO;
         block(r, i, &halted);
+    }
+    return YES;
+}
+
+/* Input-order reads gathered per pass of a grouped run (M103). */
+static const NSUInteger kGroupedChunk = 1u << 22;
+
+static int _ttio_cmp_u64(const void *a, const void *b)
+{
+    uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* Reads [start, stop) of a grouped run in input order. Each pass gathers
+ * up to kGroupedChunk input-order reads: their stored rows are visited
+ * block by block, each block decoded once per pass, and the reads are
+ * delivered in input order. A pass holds its reads in memory; a range of
+ * a few blocks' worth decodes only those blocks. */
+- (BOOL)_iterGroupedFrom:(NSUInteger)start
+                      to:(NSUInteger)stop
+                   error:(NSError **)error
+              usingBlock:(void (^)(TTIOAlignedRead *read, NSUInteger index, BOOL *stop))block
+{
+    const uint32_t *so = (const uint32_t *)_storedOf.bytes;
+    BOOL halted = NO;
+    for (NSUInteger c0 = start; c0 < stop && !halted; c0 += kGroupedChunk) {
+        @autoreleasepool {
+            NSUInteger c1 = MIN(stop, c0 + kGroupedChunk);
+            NSUInteger m = c1 - c0;
+            // (stored row << 32 | k), sorted: rows ascending, ties by k.
+            NSMutableData *keys = [NSMutableData dataWithLength:m * sizeof(uint64_t)];
+            uint64_t *kv = (uint64_t *)keys.mutableBytes;
+            for (NSUInteger k = 0; k < m; k++) kv[k] = ((uint64_t)so[c0 + k] << 32) | (uint64_t)k;
+            qsort(kv, m, sizeof(uint64_t), _ttio_cmp_u64);
+            NSMutableArray *out = [NSMutableArray arrayWithCapacity:m];
+            for (NSUInteger k = 0; k < m; k++) [out addObject:[NSNull null]];
+            NSUInteger k = 0;
+            while (k < m) {
+                NSUInteger s = (NSUInteger)(kv[k] >> 32);
+                NSUInteger b = [_blockTable blockForRead:s];
+                if (b == NSNotFound) {
+                    if (error) *error = TTIOMakeError(TTIOErrorDatasetRead,
+                        @"stored row %lu out of range", (unsigned long)s);
+                    return NO;
+                }
+                NSUInteger r0 = (NSUInteger)[_blockTable readStartAt:b];
+                NSUInteger r1 = r0 + (NSUInteger)[_blockTable nReadsAt:b];
+                TTIOGenomicRun *view = [self _blockView:b error:error];
+                if (!view) return NO;
+                while (k < m && (NSUInteger)(kv[k] >> 32) < r1) {
+                    NSUInteger row = (NSUInteger)(kv[k] >> 32);
+                    TTIOAlignedRead *r = [view readAtIndex:row - r0 error:error];
+                    if (!r) return NO;
+                    out[(NSUInteger)(kv[k] & 0xFFFFFFFFu)] = r;
+                    k++;
+                }
+            }
+            for (NSUInteger j = 0; j < m && !halted; j++) block(out[j], c0 + j, &halted);
+        }
     }
     return YES;
 }
@@ -699,9 +792,18 @@ static NSUInteger TTIOReadAheadBlocks(void)
     }
     TTIOGenomicIndex *index = nil;
     TTIOBlockTable *table = nil;
-    if ([layout isEqualToString:@"blocks_v1"]) {
+    NSData *inputIndex = nil, *storedOf = nil;
+    if ([layout isEqualToString:@"blocks_v1"] || [layout isEqualToString:@"blocks_v1_grouped"]) {
         table = [TTIOBlockTable readFromRunGroup:runGroup error:error];
         if (!table) return nil;
+        if ([layout isEqualToString:@"blocks_v1_grouped"]) {
+            /* M103: reads are stored grouped by sequence; input_index
+             * restores input order (format-spec 10.12.7). */
+            inputIndex = [self _readInputIndexOf:runGroup name:name
+                                       readCount:(NSUInteger)table.readCount
+                                        storedOf:&storedOf error:error];
+            if (!inputIndex) return nil;
+        }
     } else if ([layout isEqualToString:@"whole"]) {
         id<TTIOStorageGroup> idxGroup = [runGroup openGroupNamed:@"genomic_index" error:error];
         if (!idxGroup) return nil;
@@ -710,7 +812,7 @@ static NSUInteger TTIOReadAheadBlocks(void)
     } else {
         if (error) *error = TTIOMakeError(TTIOErrorUnsupportedLayout,
             @"genomic run '%@': unsupported layout '%@' (this reader knows the "
-            @"whole-channel layout and blocks_v1)", name, layout);
+            @"whole-channel layout, blocks_v1 and blocks_v1_grouped)", name, layout);
         return nil;
     }
 
@@ -748,10 +850,51 @@ static NSUInteger TTIOReadAheadBlocks(void)
                group:runGroup];
     run->_layout = layout;
     run->_blockTable = table;
+    run->_inputIndex = inputIndex;
+    run->_storedOf = storedOf;
     run->_injectedResolver = resolver;
     run->_readRole = [readRole isKindOfClass:[NSString class]]
         ? [readRole copy] : nil;
     return run;
+}
+
+/* genomic_index/input_index of a blocks_v1_grouped run, checked to be a
+ * permutation of its readCount reads; *storedOf receives the inverse. */
++ (NSData *)_readInputIndexOf:(id<TTIOStorageGroup>)runGroup
+                         name:(NSString *)name
+                    readCount:(NSUInteger)n
+                     storedOf:(NSData **)storedOf
+                        error:(NSError **)error
+{
+    id<TTIOStorageGroup> ig = [runGroup openGroupNamed:@"genomic_index" error:error];
+    if (!ig) return nil;
+    id<TTIOStorageDataset> ds = [ig hasChildNamed:@"input_index"]
+        ? [ig openDatasetNamed:@"input_index" error:NULL] : nil;
+    id raw = ds ? [ds readAll:NULL] : nil;
+    BOOL ok = [raw isKindOfClass:[NSData class]]
+        && [ds precision] == TTIOPrecisionUInt32
+        && [(NSData *)raw length] == n * sizeof(uint32_t);
+    NSMutableData *inv = ok ? [NSMutableData dataWithLength:n * sizeof(uint32_t)] : nil;
+    if (ok) {
+        const uint32_t *ii = (const uint32_t *)[(NSData *)raw bytes];
+        uint32_t *so = (uint32_t *)inv.mutableBytes;
+        NSMutableData *seen = [NSMutableData dataWithLength:n];
+        uint8_t *sv = (uint8_t *)seen.mutableBytes;
+        for (NSUInteger j = 0; j < n; j++) {
+            uint32_t v = ii[j];
+            if (v >= n || sv[v]) { ok = NO; break; }
+            sv[v] = 1;
+            so[v] = (uint32_t)j;
+        }
+    }
+    if (!ok) {
+        if (error) *error = TTIOMakeError(TTIOErrorDatasetRead,
+            @"genomic run '%@': input_index is not a permutation of its %lu reads",
+            name, (unsigned long)n);
+        return nil;
+    }
+    *storedOf = inv;
+    return [(NSData *)raw copy];
 }
 
 - (id<TTIOStorageGroup>)signalChannelsGroupWithError:(NSError **)error
@@ -1087,7 +1230,7 @@ static uint8_t _ttio_m86_read_compression_attr_protocol(id<TTIOStorageDataset> d
                 [all addObjectsFromArray:part];
             }
         }
-        return all;
+        return _storedOf ? [self _inInputOrder:all] : all;
     }
     id<TTIOStorageDataset> ds = [self signalDatasetNamed:@"tags" error:error];
     if (!ds) return nil;
@@ -1177,6 +1320,17 @@ static uint8_t _ttio_m86_read_compression_attr_protocol(id<TTIOStorageDataset> d
                              count:(NSUInteger)count
                              error:(NSError **)error
 {
+    if (_storedOf != nil) {
+        // M103: base coordinates are input order (the index's offsets).
+        NSData *full = [self _byteChannelFullNamed:name];
+        if (offset + count > full.length) {
+            if (error) *error = TTIOMakeError(TTIOErrorDatasetRead,
+                @"%@ slice [%lu, %lu) past the end (%lu)", name, (unsigned long)offset,
+                (unsigned long)(offset + count), (unsigned long)full.length);
+            return nil;
+        }
+        return [full subdataWithRange:NSMakeRange(offset, count)];
+    }
     if (_blockTable) return [self _blockByteChannelSliceNamed:name offset:offset count:count error:error];
     // refdiff_v2 group layout probe for sequences channel. Routed via
     // the codec registry (REF_DIFF_V2 group-payload adapter); the
@@ -1317,6 +1471,7 @@ static uint8_t _ttio_m86_read_compression_attr_protocol(id<TTIOStorageDataset> d
 - (NSString *)readNameAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) {
             if (error) *error = [NSError errorWithDomain:@"TTIOGenomicRun" code:2040
@@ -1511,6 +1666,7 @@ static int _ttio_m86_cigars_varint_read(const uint8_t *buf, size_t buf_len,
 - (NSString *)cigarAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) {
             if (error) *error = [NSError errorWithDomain:@"TTIOGenomicRun" code:2060
@@ -2003,6 +2159,7 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (NSString *)_mateChromAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) return nil;
         TTIOGenomicRun *view = [self _blockView:b error:error];
@@ -2021,6 +2178,7 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (int64_t)_matePosAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) return 0;
         TTIOGenomicRun *view = [self _blockView:b error:error];
@@ -2042,6 +2200,7 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (int32_t)_mateTlenAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) return 0;
         TTIOGenomicRun *view = [self _blockView:b error:error];
@@ -2063,6 +2222,7 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (TTIOAlignedRead *)readAtIndex:(NSUInteger)i error:(NSError **)error
 {
     if (_blockTable) {
+        i = [self _storedRow:i];
         NSUInteger b = [_blockTable blockForRead:i];
         if (b == NSNotFound) {
             if (error) *error = [NSError errorWithDomain:@"TTIOGenomicRun" code:0
@@ -2226,6 +2386,8 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (nullable NSData *)readMateInfoInlineV2BlobBytes
 {
     if (_blockTable) {
+        // A grouped run's blobs are in stored order (M103).
+        if (_storedOf != nil) return nil;
         return _blockTable.count == 1 ? [[self _blockView:0 error:NULL] readMateInfoInlineV2BlobBytes] : nil;
     }
     id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
@@ -2286,6 +2448,8 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (nullable NSData *)readNameTokV2BlobBytes
 {
     if (_blockTable) {
+        // A grouped run's blobs are in stored order (M103).
+        if (_storedOf != nil) return nil;
         return _blockTable.count == 1 ? [[self _blockView:0 error:NULL] readNameTokV2BlobBytes] : nil;
     }
     id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
@@ -2311,6 +2475,8 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 - (nullable NSData *)readRefDiffV2BlobBytes
 {
     if (_blockTable) {
+        // A grouped run's blobs are in stored order (M103).
+        if (_storedOf != nil) return nil;
         return _blockTable.count == 1 ? [[self _blockView:0 error:NULL] readRefDiffV2BlobBytes] : nil;
     }
     id<TTIOStorageGroup> sig = [self signalChannelsGroupWithError:NULL];
@@ -2339,6 +2505,17 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
 }
 
 #pragma mark - Bulk accessors for hot serialization paths
+
+/* A stored-order per-read list of a grouped run in input order. */
+- (NSArray *)_inInputOrder:(NSArray *)stored
+{
+    NSUInteger n = _storedOf.length / sizeof(uint32_t);
+    if (stored.count != n) return stored;
+    const uint32_t *so = (const uint32_t *)_storedOf.bytes;
+    NSMutableArray *out = [NSMutableArray arrayWithCapacity:n];
+    for (NSUInteger i = 0; i < n; i++) [out addObject:stored[so[i]]];
+    return out;
+}
 
 - (NSUInteger)_totalBaseCount
 {
@@ -2372,6 +2549,27 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
     NSData *cached = _decodedByteChannels[name];
     if (cached) return cached;
     NSError *err = nil;
+    if (_storedOf != nil) {
+        // M103: gather the stored channel into input order.
+        NSData *stored = [self _blockByteChannelSliceNamed:name offset:0 count:total error:&err];
+        TTIOGenomicIndex *sidx = [self _storedIndex];
+        if (!stored || !sidx || stored.length < total) return [NSData data];
+        NSMutableData *out = [NSMutableData dataWithLength:total];
+        uint8_t *dst = (uint8_t *)out.mutableBytes;
+        const uint8_t *src = (const uint8_t *)stored.bytes;
+        const uint32_t *so = (const uint32_t *)_storedOf.bytes;
+        NSUInteger n = _storedOf.length / sizeof(uint32_t), at = 0;
+        for (NSUInteger i = 0; i < n; i++) {
+            NSUInteger s = so[i];
+            uint32_t len = [sidx lengthAt:s];
+            uint64_t off = [sidx offsetAt:s];
+            if (at + len > total || off + len > total) return [NSData data];
+            memcpy(dst + at, src + off, len);
+            at += len;
+        }
+        _decodedByteChannels[name] = out;
+        return out;
+    }
     NSData *full = [self byteChannelSliceNamed:name
                                          offset:0
                                           count:total
@@ -2392,7 +2590,7 @@ static void _ttio_v17_reject_legacy_mate_layout(NSError **error)
             if (!view) return @[];
             [all addObjectsFromArray:[view allReadNames]];
         }
-        return all;
+        return _storedOf ? [self _inInputOrder:all] : all;
     }
     NSUInteger n = [self index].count;
     if (n == 0) return @[];

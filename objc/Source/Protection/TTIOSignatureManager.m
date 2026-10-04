@@ -588,6 +588,8 @@ static NSString *const kSignalChannelNames[] = {
 static NSString *const kIndexColumnNames[] = {
     @"offsets", @"lengths", @"positions", @"mapping_qualities", @"flags",
     @"chromosome_ids", @"chromosome_names",
+    // blocks_v1_grouped only (M103): the permutation back to input order.
+    @"input_index",
 };
 
 // Test whether ``parentPath/childName`` exists in the file. Used to

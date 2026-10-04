@@ -71,6 +71,7 @@ header. Version 1 is defined by this document.
 
 | Version | Date       | Changes |
 |---------|------------|---------|
+| v0.13   | 2026-10-03 | `blocks_v1_grouped` runs (format-spec §10.12.7): their GenomicRunSidecar carries that layout and each BlockSidecar ends with the block's `input_index` rows; the required `transport_blocks_v1_grouped` feature token announces them (§4.24). Plaintext streams send a grouped run's reads in input order and never in bulk mode. |
 | v0.12   | 2026-08-25 | blocks_v1 per-AU carriage: `GENOMIC_RUN_SIDECAR` (0x1C) + `BLOCK_SIDECAR` (0x1D) packets and the required `transport_blocks_v1` feature token (§4.24). Senders no longer refuse blocks_v1 containers. |
 | v0.11   | 2026-05-25 | Complete `.tio` coverage: references, image cubes, identifications, quantifications, dataset-level provenance, subjects/samples metadata, encryption-algorithm name. New packet types 0x10–0x1B. `SUBJECT_METADATA` (0x19) + `SAMPLE_METADATA` (0x1A) wire format finalised 2026-05-26 (§4.22). Backward-compatible: v0.10 readers skip unknown packet types via length-prefixed wire frames; readers that need v0.11 semantics check the `transport_v0_11` feature flag in StreamHeader. |
 
@@ -876,7 +877,21 @@ n_blobs:             uint8                    # plaintext sidecar channels only
 channel_name:        uint16 len + UTF-8
 blob_length:         uint32
 blob:                bytes[blob_length]       # the block's verbatim blob slice
+# v0.13, only when the run's layout is "blocks_v1_grouped":
+input_index:         uint32[n_reads]          # little-endian; the block's rows of
+                                              # genomic_index/input_index
 ```
+
+When any run in the stream has the `blocks_v1_grouped` layout
+(format-spec §10.12.7) the sender also adds the required token
+`transport_blocks_v1_grouped`; like `transport_blocks_v1` it is
+wire-scoped and receivers MUST NOT write it into the output container.
+A receiver treats any bytes after the blobs as `input_index` and MUST
+reject the packet unless they are exactly `4 * n_reads` bytes; it writes
+`genomic_index/input_index` as the concatenation of the blocks' slices
+in block order and refuses a grouped run whose sidecars lack them. A
+v0.12 receiver would rebuild the run with the grouped layout and no
+`input_index`, which every reader refuses rather than misreads.
 
 The receiver writes the run attributes (including the verbatim
 `reference_md5s` string and the policy attributes), recreates

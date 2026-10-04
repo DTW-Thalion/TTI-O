@@ -200,11 +200,49 @@ read as 0.
 
 - Read order: blocks_v1 codes each block on its own, so the model
   restarts every block and the result depends on which reads share a
-  block. Unaligned runs will be able to reorder their reads before
-  blocking and store the permutation (opt-in; M103 Phase 0 README,
-  "Grouping reads before blocking").
+  block. Unaligned runs can be grouped before blocking (§6), opt-in;
+  when to group by default is open.
 - Throughput: about 8 MB/s per core on grouped or coordinate-ordered
   reads, about 3 MB/s on shuffled reads, in the reference kernel.
 - Model memory: `16 << table_bits` bytes per hashed order on encode and
   decode (about 0.5 GB at the automatic maximum of 24), per block coded
   at once.
+
+## 6. Read grouping (`ttio_seq_group`)
+
+blocks_v1 codes each block on its own, so SEQ_CM compresses a block well
+only when the block holds reads that overlap. A writer asked to group an
+unaligned run (format-spec §10.12.7) reorders it with `ttio_seq_group`
+before cutting blocks and stores the permutation. The kernel is shared by
+the three SDKs; every tie below is broken on a total order, so the
+permutation depends only on the reads and their names.
+
+Defaults (`ttio_seq_group_default_params`): k = 20, window from the
+median read length, `min_votes` = 2, `max_occ` = 256, FILL and MATES on.
+
+1. **Index.** Each read's (w, k) window minimizers over both strands
+   (canonical k-mer, 64-bit mix hash), `w = ceil(median length / 8)`
+   clamped to 8..32 (about 16 minimizers a read). Minimizers shared by
+   more than `max_occ` reads (repeats) are ignored.
+2. **Chains.** From a seed, walk left to the unplaced read that starts
+   the least distance before the current one, then from the seed right
+   to the one that starts the least distance after it, tracking each
+   read's strand and start in the chain's frame. A neighbour counts only
+   when `min_votes` of the current read's minimizers put it at the same
+   start and strand; ties go to the lower read, then orientation 0.
+3. **Fill.** After each chain read, its unplaced neighbours on even one
+   minimizer that start within a read length of it, by start.
+4. **Seeds.** The unplaced mate (same name up to the first whitespace,
+   a trailing `/1` or `/2` dropped) of one of the last 4096 placed reads;
+   then the most recently placed read that still has an unplaced
+   neighbour (a stack, popped once a read has none left); then the next
+   read in input order.
+5. A read that chains to nothing goes to the end of the run.
+
+Measured on HG002 2x250 chr22 in name-hash order (10.6 M reads, 40
+blocks of 64 MiB): bases 1.453 bits/base ungrouped, 0.396 grouped (0.484
+with the permutation), 0.348 in coordinate order; on the WES chr22 slice
+(~100 bp reads) 0.624, 0.497 and 0.496, where the permutation (0.19
+bits/base) outweighs the gain. Grouping 10.6 M reads takes about 90 s on
+one core. The study, including the methods that did not pay, is in
+`tools/prototypes/m103_seq_model/README.md`.

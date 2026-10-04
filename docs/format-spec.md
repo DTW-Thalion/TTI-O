@@ -1603,7 +1603,7 @@ v1.8 whole-channel layout.
 
 | Attribute | Type | Meaning |
 |---|---|---|
-| `@layout` | fixed string `"blocks_v1"` | Selects this layout. Absent means the v1.8 whole-channel layout. A reader that does not know the value MUST fail with an unsupported-layout error. |
+| `@layout` | fixed string `"blocks_v1"`, or `"blocks_v1_grouped"` (§10.12.7) | Selects this layout. Absent means the v1.8 whole-channel layout. A reader that does not know the value MUST fail with an unsupported-layout error. |
 | `@block_policy` | fixed string | Writer policy, informative, e.g. `reads=1000000,bytes=67108864`. |
 | `@read_count`, `@base_count` | int64 | Totals over the blocks written so far; updated at every flush and at close. |
 | `@ref_diff_slice_bytes`, `@opt_disable_qualities_v5`, `@reference_md5s` | see §9.1.1 | Persisted writer policy and reference set for the per-AU restore re-encode (M99.1). Present only when non-default / applicable. |
@@ -1698,7 +1698,8 @@ of the streaming import at the default 1 M-read blocks: 1.8 GB and
 `lengths`, `positions`, `mapping_qualities`, `flags`,
 `chromosome_ids` keep their v1.8 element types and are extendable
 chunked datasets. `read_start`/`base_start` in the block index give
-`run[i]` its block with one binary search.
+`run[i]` its block with one binary search. A `blocks_v1_grouped` run
+adds `input_index` (§10.12.7).
 
 ### 10.12.5 Close and partial files
 
@@ -1712,7 +1713,8 @@ the last indexed block and use the index row count, not
 `sign_genomic_run` / `verify_genomic_run` cover the same datasets as
 for the whole-channel layout (the datasets inside a channel group,
 `sequences/data`, included), the `tags` channel when present (M101),
-plus `blocks/index` (canonical compound bytes). Per-AU encryption
+plus `blocks/index` (canonical compound bytes) and, for a
+`blocks_v1_grouped` run, `genomic_index/input_index`. Per-AU encryption
 walks this layout block by block (§9.1.1, M99) and encrypts
 `sequences`, `qualities` and, when present, `tags`. Region encryption
 operates on the whole-channel layout only and refuses a run that
@@ -1721,6 +1723,43 @@ carries tags.
 Cross-language: Java `GenomicStreamWriter` / ObjC
 `TTIOGenomicStreamWriter` and their readers implement this section;
 the golden fixture is `python/tests/fixtures/genomic/blocks_v1_golden.tio`.
+
+### 10.12.7 `blocks_v1_grouped` — reads grouped by sequence (M103)
+
+An unaligned run (no reference) can be written with its reads
+reordered so that reads from the same place in the genome share a
+block, which is what SEQ_CM (codec id 19) needs to see each read's
+overlap partners (`docs/codecs/seq_cm.md` §6). Writers do this only on
+request (`group_reads` / `opt_group_reads`); a run with a reference
+keeps its order for REF_DIFF_V2 and is refused.
+
+The run is a `blocks_v1` run in every respect except:
+
+- `@layout` is `"blocks_v1_grouped"`. Readers that predate it reject
+  the run as an unknown layout instead of reading it in stored order.
+- Every channel and every `genomic_index` column holds the reads in
+  stored (grouped) order, and `genomic_index/input_index` (uint32,
+  extendable, chunked and compressed like the other index columns)
+  holds, at row `j`, the input index of the read stored at row `j`.
+  It is a permutation of `0 .. read_count - 1`; a reader MUST refuse a
+  run whose `input_index` has the wrong length or is not a permutation.
+- The order is `ttio_seq_group` (`native/include/ttio_rans.h`) at its
+  default parameters, applied within each chromosome label (labels in
+  first-seen order), so a block still never spans two labels. The
+  kernel is shared by the three SDKs and breaks every tie on a total
+  order, so they write identical files.
+
+Readers present the run in input order: `run[i]` is the `i`-th read as
+imported (one lookup through the inverse permutation, one block
+decode), the index arrays are permuted into input order (`offsets`
+recomputed from the input-order lengths), sequential iteration gathers
+input-order chunks block by block, and exporters therefore restore the
+original order. Block-level iteration stays in stored order and maps
+its rows through `input_index`. Per-AU encryption and restore walk the
+stored rows block by block and leave `input_index` as it is; plaintext
+transport sends reads in input order (never in bulk mode) and the
+receiver writes an ordinary run; the encrypted transport carries
+`input_index` in each BlockSidecar (transport-spec v0.13, §4.24).
 
 ## 10.13 `tags` channel — SAM optional fields (M101)
 

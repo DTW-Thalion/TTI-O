@@ -274,6 +274,8 @@ class GenomicStreamSource:
     block_reads: int | None = None           # None -> writer defaults
     block_bytes: int | None = None
     opt_legacy_whole_channel: bool = False
+    # M103: group the reads by sequence before blocking (no reference).
+    group_reads: bool = False
     threads: int | None = None                # None -> TTIO_THREADS
     # M97 — @read_role run attribute; falls back to the first batch's
     # read_role when None.
@@ -305,6 +307,7 @@ class GenomicStreamSource:
                     signal_codec_overrides=batch.signal_codec_overrides,
                     signal_compression=batch.signal_compression,
                     opt_legacy_whole_channel=self.opt_legacy_whole_channel,
+                    group_reads=self.group_reads,
                     provenance_records=batch.provenance_records,
                     read_role=self.read_role or batch.read_role,
                     ref_diff_slice_bytes=(self.ref_diff_slice_bytes

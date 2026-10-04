@@ -37,6 +37,7 @@ from .packets import (
     PacketHeader,
     PacketType,
     TRANSPORT_BLOCKS_V1_FEATURE,
+    TRANSPORT_BLOCKS_V1_GROUPED_FEATURE,
     now_ns,
     pack_string,
 )
@@ -119,8 +120,10 @@ def write_encrypted_dataset(
         # per block); the StreamHeader announces them with a wire
         # feature token so receivers know the stream needs them.
         stream_features = list(features)
-        if any(v == "blocks_v1" for v in genomic_layouts.values()):
+        if any(v in _BLOCKS_LAYOUTS for v in genomic_layouts.values()):
             stream_features.append(TRANSPORT_BLOCKS_V1_FEATURE)
+        if any(v == "blocks_v1_grouped" for v in genomic_layouts.values()):
+            stream_features.append(TRANSPORT_BLOCKS_V1_GROUPED_FEATURE)
 
         writer.write_stream_header(
             format_version="1.2",
@@ -356,7 +359,7 @@ def write_encrypted_dataset(
                 expected_au_count=n_reads,
             )
 
-            if genomic_layouts.get(g_run_name) == "blocks_v1":
+            if genomic_layouts.get(g_run_name) in _BLOCKS_LAYOUTS:
                 _emit_blocks_v1_sidecars(writer, g_run_group, g_sig,
                                           dataset_id=g_dataset_id)
 
@@ -440,6 +443,11 @@ def _compound_names(group, name: str) -> list[str]:
     return out
 
 
+#: The layouts sent with sidecars; blocks_v1_grouped (M103) is blocks_v1
+#: plus each block's slice of genomic_index/input_index.
+_BLOCKS_LAYOUTS = ("blocks_v1", "blocks_v1_grouped")
+
+
 def _emit_blocks_v1_sidecars(writer, run_group, sig, *,
                               dataset_id: int) -> None:
     """One GenomicRunSidecar, then one BlockSidecar per block, for a
@@ -493,6 +501,9 @@ def _emit_blocks_v1_sidecars(writer, run_group, sig, *,
 
     idx = run_group.open_group("genomic_index")
     chrom_names = _compound_names(idx, "chromosome_names")
+    input_index = None
+    if (io.read_string_attr(run_group, "layout") or "") == "blocks_v1_grouped":
+        input_index = np.asarray(idx.open_dataset("input_index").read(), dtype="<u4")
     mate_names: list[str] = []
     if sig.has_child("mate_info"):
         mg = sig.open_group("mate_info")
@@ -542,6 +553,10 @@ def _emit_blocks_v1_sidecars(writer, run_group, sig, *,
                     if ln else b"")
             parts.append(pack_string(ch, width=2)
                          + struct.pack("<I", len(data)) + data)
+        if input_index is not None:
+            # v0.13: the block's rows of genomic_index/input_index.
+            r0 = int(table.read_start[b])
+            parts.append(input_index[r0:r0 + int(table.n_reads[b])].tobytes())
         writer._emit(PacketType.BLOCK_SIDECAR, b"".join(parts),
                       dataset_id=dataset_id, au_sequence=b)
 
@@ -588,10 +603,18 @@ def _decode_block_sidecar(payload: bytes) -> dict:
         name, off = unpack_string(payload, off, width=2)
         (ln,) = struct.unpack_from("<I", payload, off); off += 4
         blobs[name] = bytes(payload[off:off + ln]); off += ln
+    # v0.13 (M103): a blocks_v1_grouped run's sidecar ends with the
+    # block's input_index rows, n_reads x uint32.
+    input_index = None
+    if off < len(payload):
+        if len(payload) - off != 4 * int(n_reads):
+            raise ValueError(f"BlockSidecar {b}: {len(payload) - off} trailing bytes, "
+                             f"expected {4 * int(n_reads)} of input_index")
+        input_index = np.frombuffer(payload, dtype="<u4", count=int(n_reads), offset=off)
     return {"block_index": int(b), "read_start": int(read_start),
             "n_reads": int(n_reads), "base_start": int(base_start),
             "n_bases": int(n_bases), "channels": channels,
-            "blobs": blobs}
+            "blobs": blobs, "input_index": input_index}
 
 
 def _read_chromosomes_compound(idx_group) -> list[str]:
@@ -885,6 +908,7 @@ def read_encrypted_to_file(
     # token is transport-scoped and never a container feature flag.
     features = set(stream_meta.get("features", []))
     features.discard(TRANSPORT_BLOCKS_V1_FEATURE)
+    features.discard(TRANSPORT_BLOCKS_V1_GROUPED_FEATURE)
     features.add(OPT_PER_AU_ENCRYPTION)
     any_encrypted_headers = any(d["used_encrypted_headers"] for d in datasets.values())
     if any_encrypted_headers:
@@ -1211,6 +1235,17 @@ def _write_blocks_v1_genomic_run(g_runs_group, d: dict,
             compression=Compression.ZLIB, compression_level=6,
             extendable=True)
         ds.append(arrays[name].astype(dt))
+    if sc["layout"] == "blocks_v1_grouped":
+        # M103: the permutation back to input order, from the sidecars.
+        parts = [bs["input_index"] for bs in sidecars]
+        if any(p is None for p in parts):
+            raise ValueError(f"genomic run {meta['name']!r}: blocks_v1_grouped "
+                             "stream without input_index in its BlockSidecars")
+        ds = idx_group.create_dataset(
+            "input_index", Precision.UINT32, 0, chunk_size=io.DEFAULT_SIGNAL_CHUNK,
+            compression=Compression.ZLIB, compression_level=6, extendable=True)
+        ds.append(np.concatenate(parts).astype(np.uint32) if parts
+                  else np.zeros(0, dtype=np.uint32))
     io.write_compound_dataset(
         idx_group, "chromosome_names",
         [{"name": n} for n in chrom_table], [("name", io.vl_str())])

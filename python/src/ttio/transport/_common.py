@@ -142,7 +142,7 @@ def _iter_genomic_run_access_units(run) -> Iterator[tuple[int, "AccessUnit"]]:
     # A blocks_v1 run (format-spec 10.12) keeps its blobs per block and
     # is sent with the plain per-AU channel bytes.
     seq_codec = qual_codec = compression_none
-    blocks = getattr(run, "layout", "whole") == "blocks_v1"
+    blocks = getattr(run, "layout", "whole") in ("blocks_v1", "blocks_v1_grouped")
     try:
         sig_group = run.group.open_group("signal_channels")
         if sig_group.has_child("sequences"):

@@ -104,6 +104,12 @@ class WrittenGenomicRun:
     # unbounded in the run size.
     opt_legacy_whole_channel: bool = False
 
+    # M103: reorder the reads by sequence before blocking and store the
+    # permutation (layout blocks_v1_grouped, format-spec 10.12.7). Only
+    # for runs without a reference; readers present input order.
+    # Memory is then unbounded in the run size.
+    opt_group_reads: bool = False
+
     # Precomputed reference MD5 (the sorted-name concatenation digest,
     # see genomic.reference_import.compute_reference_md5). The stream
     # writer computes it once per run so a large reference is not

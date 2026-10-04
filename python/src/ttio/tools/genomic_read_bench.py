@@ -130,7 +130,7 @@ def _read(path: Path, windows: list[int], run_name: str | None,
         name = run_name or next(iter(ds.genomic_runs))
         g = ds.genomic_runs[name]
         layout, blocks, n_reads = g.layout, g.block_count, len(g)
-    if layout != "blocks_v1":
+    if layout not in ("blocks_v1", "blocks_v1_grouped"):
         print(f"{path} run {name} is {layout}, not blocks_v1; the window "
               f"does not apply", file=sys.stderr)
         return 1

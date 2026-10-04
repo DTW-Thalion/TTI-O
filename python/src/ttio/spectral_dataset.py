@@ -72,7 +72,8 @@ def _write_genomic_run_default(study, g_group, name: str, run: WrittenGenomicRun
             signal_compression=run.signal_compression,
             provenance_records=run.provenance_records,
             read_role=run.read_role,
-            ref_diff_slice_bytes=run.ref_diff_slice_bytes) as w:
+            ref_diff_slice_bytes=run.ref_diff_slice_bytes,
+            group_reads=run.opt_group_reads) as w:
         w.append_batch(run)
 from . import _dataset_write_metadata as _mw
 # Back-compat re-export: tests/test_references_accessor.py imports this

@@ -170,11 +170,16 @@ def materialise_block(run_group, table: BlockTable, b: int, *,
 class LazyGenomicIndex:
     """:class:`~ttio.genomic_index.GenomicIndex` look-alike for
     ``blocks_v1`` runs: ``count`` comes from the block table, the
-    per-read arrays load from disk on first use."""
+    per-read arrays load from disk on first use.
 
-    def __init__(self, idx_group, table: BlockTable):
+    For a ``blocks_v1_grouped`` run ``stored_of`` maps each input index
+    to its stored row, and the arrays are presented in input order, with
+    ``offsets`` recomputed from the input-order lengths (M103)."""
+
+    def __init__(self, idx_group, table: BlockTable, stored_of: np.ndarray | None = None):
         self._idx_group = idx_group
         self._table = table
+        self._stored_of = stored_of
         self._loaded = None
 
     @property
@@ -183,8 +188,19 @@ class LazyGenomicIndex:
 
     def _load(self):
         if self._loaded is None:
-            from ..genomic_index import GenomicIndex
-            self._loaded = GenomicIndex.read(self._idx_group)
+            from ..genomic_index import GenomicIndex, _offsets_from_lengths
+            idx = GenomicIndex.read(self._idx_group)
+            p = self._stored_of
+            if p is not None:
+                lengths = idx.lengths[p]
+                ids = idx.chromosome_ids[p] if idx.chromosome_ids is not None else None
+                idx = GenomicIndex(
+                    offsets=_offsets_from_lengths(lengths), lengths=lengths,
+                    chromosomes=[idx.chromosomes[s] for s in p.tolist()],
+                    positions=idx.positions[p], mapping_qualities=idx.mapping_qualities[p],
+                    flags=idx.flags[p], chromosome_ids=ids,
+                    chromosome_names=idx.chromosome_names)
+            self._loaded = idx
         return self._loaded
 
     def __getattr__(self, name):

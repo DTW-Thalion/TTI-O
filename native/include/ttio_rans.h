@@ -627,6 +627,49 @@ int ttio_seq_cm_decode(
 
 void ttio_seq_cm_free(void *p);
 
+/* ──────────────────────────────────────────────────────────────────────
+ * Read grouping for unaligned runs (M103): a permutation that puts reads
+ * from the same place in the genome next to each other, so a blocks_v1
+ * block holds them together and SEQ_CM sees each read's overlap partners.
+ * Writers that group store the permutation (genomic_index/input_index)
+ * so readers restore input order. Method: docs/codecs/seq_cm.md §6 and
+ * tools/prototypes/m103_seq_model/README.md.
+ *
+ * seq holds the reads' bases back to back; lengths[i] is read i's length.
+ * names/name_offsets (n_reads + 1 offsets) give each read's name; reads
+ * whose names match up to the first whitespace, a trailing /1 or /2
+ * dropped, are mates. They are needed only with
+ * TTIO_SEQ_GROUP_FLAG_MATES. params == NULL takes the defaults of
+ * ttio_seq_group_default_params; window == 0 picks the minimizer window
+ * from the median read length.
+ *
+ * On success order[j] is the input index of the read stored at row j
+ * (order is caller-allocated, n_reads entries). The result depends only
+ * on the inputs, not on the platform. n_reads must be below 2^32 - 1.
+ * Returns 0, TTIO_RANS_ERR_PARAM or TTIO_RANS_ERR_ALLOC.
+ * ────────────────────────────────────────────────────────────────────── */
+#define TTIO_SEQ_GROUP_FLAG_FILL  0x01  /* place weakly linked reads beside the chain */
+#define TTIO_SEQ_GROUP_FLAG_MATES 0x02  /* seed new chains from mates (needs names) */
+
+typedef struct {
+    uint8_t  k;                     /* minimizer length, 8 .. 32           */
+    uint8_t  window;                /* minimizer window, 0 = automatic     */
+    uint8_t  min_votes;             /* minimizers that must agree, >= 1    */
+    uint8_t  flags;                 /* TTIO_SEQ_GROUP_FLAG_*               */
+    uint32_t max_occ;               /* ignore minimizers in more reads     */
+} ttio_seq_group_params;
+
+void ttio_seq_group_default_params(ttio_seq_group_params *p);
+
+int ttio_seq_group(
+    const uint8_t  *seq,
+    const uint64_t *lengths,
+    uint64_t        n_reads,
+    const uint8_t  *names,
+    const uint64_t *name_offsets,
+    const ttio_seq_group_params *params,
+    uint32_t       *order);
+
 #ifdef __cplusplus
 }
 #endif

@@ -56,6 +56,7 @@ add_library(ttio_rans SHARED
     src/name_tok_v2.c
     src/sam_tags.c
     src/seq_cm.c
+    src/seq_group.c
     src/dispatch.c
     src/rans_o0.c
     src/threadpool.c
@@ -397,6 +398,10 @@ add_executable(test_seq_cm tests/test_seq_cm.c)
 target_link_libraries(test_seq_cm PRIVATE ttio_rans)
 target_include_directories(test_seq_cm PRIVATE src)
 add_test(NAME seq_cm COMMAND test_seq_cm)
+
+add_executable(test_seq_group tests/test_seq_group.c)
+target_link_libraries(test_seq_group PRIVATE ttio_rans)
+add_test(NAME seq_group COMMAND test_seq_group)
 endif()  # BUILD_TESTING
 
 

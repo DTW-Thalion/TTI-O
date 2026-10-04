@@ -129,6 +129,13 @@
 + (instancetype)readFromGroup:(id<TTIOStorageGroup>)group
                         error:(NSError **)error;
 
+/** M103: this index in another read order. <code>storedOf</code> holds
+ *  one uint32 per read: entry i is the row of this index that becomes
+ *  row i. Offsets are recomputed from the reordered lengths; the
+ *  chromosome id table, when present, is kept. Used to present a
+ *  <code>blocks_v1_grouped</code> run's index in input order. */
+- (instancetype)indexPermutedBy:(NSData *)storedOf;
+
 @end
 
 /**

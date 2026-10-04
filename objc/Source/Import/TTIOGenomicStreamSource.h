@@ -35,6 +35,9 @@ typedef BOOL (^TTIOGenomicBatchProducer)(BOOL (^emit)(TTIOWrittenGenomicRun *bat
 @property (nonatomic, readonly, copy, nullable) NSNumber *blockReads;
 @property (nonatomic, readonly, copy, nullable) NSNumber *blockBytes;
 @property (nonatomic, readonly) BOOL optLegacyWholeChannel;
+/** M103: group the reads by sequence before blocking (no reference);
+ *  see <code>TTIOGenomicStreamWriterOptions.groupReads</code>. */
+@property (nonatomic, readonly) BOOL groupReads;
 
 - (instancetype)initWithName:(NSString *)name
                      batches:(TTIOGenomicBatchProducer)batches
@@ -44,10 +47,16 @@ typedef BOOL (^TTIOGenomicBatchProducer)(BOOL (^emit)(TTIOWrittenGenomicRun *bat
                   blockBytes:(nullable NSNumber *)blockBytes
        optLegacyWholeChannel:(BOOL)legacy;
 
-/** A copy with a different block policy. */
+/** A copy with a different block policy (grouping kept). */
 - (instancetype)sourceWithBlockReads:(nullable NSNumber *)blockReads
                           blockBytes:(nullable NSNumber *)blockBytes
                               legacy:(BOOL)legacy;
+
+/** A copy with a different block policy and grouping (M103). */
+- (instancetype)sourceWithBlockReads:(nullable NSNumber *)blockReads
+                          blockBytes:(nullable NSNumber *)blockBytes
+                              legacy:(BOOL)legacy
+                          groupReads:(BOOL)groupReads;
 
 /** Run every batch through a TTIOGenomicStreamWriter on
  *  <code>study</code>; returns the reads written, or NSNotFound with

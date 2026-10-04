@@ -142,7 +142,7 @@ public final class EncodeCli {
             + "       EncodeCli --list-formats\n"
             + "  streaming extras (bam/sam/cram, mzml): block_reads=N block_bytes=N "
             + "legacy_whole_channel=1 reference=<fasta> embed_reference=1 "
-            + "batch_reads=N batch_spectra=N");
+            + "batch_reads=N batch_spectra=N group_reads=1");
         return 2;
     }
 }

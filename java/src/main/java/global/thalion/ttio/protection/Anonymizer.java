@@ -355,8 +355,12 @@ public class Anonymizer {
             List<String> mateChromosomes = new ArrayList<>(n);
             long[] matePositions = new long[n];
             int[] templateLengths = new int[n];
+            // Input order, like gr.index() below; the iterator decodes each
+            // block once (a grouped run's reads are stored out of input
+            // order, M103).
+            java.util.Iterator<AlignedRead> reads = gr.iterReads();
             for (int i = 0; i < n; i++) {
-                AlignedRead r = gr.readAt(i);
+                AlignedRead r = reads.next();
                 readNames.add(r.readName());
                 cigars.add(r.cigar());
                 sequences[i] = r.sequence().getBytes(StandardCharsets.US_ASCII);

@@ -436,4 +436,22 @@ public final class TtioRansNative {
     private static native byte[] encodeSeqCmNative(byte[] sequences, long[] lengths);
 
     private static native byte[] decodeSeqCmNative(byte[] encoded, long[] lengths);
+
+    /**
+     * The read-grouping permutation (M103, {@code ttio_seq_group}) of reads
+     * whose bases are {@code sequences} back to back, one length per read.
+     * {@code names} (the read names' UTF-8 bytes back to back) and
+     * {@code nameOffsets} ({@code n + 1} entries) pair mates by name; pass
+     * both {@code null} to group without them. Entry {@code j} of the
+     * result is the input index of the read stored at row {@code j}. See
+     * {@link SeqGroup}.
+     */
+    public static int[] groupReads(byte[] sequences, long[] lengths,
+                                   byte[] names, long[] nameOffsets) {
+        if (!LOADED) throw new IllegalStateException("libttio_rans_jni not loaded");
+        return groupReadsNative(sequences, lengths, names, nameOffsets);
+    }
+
+    private static native int[] groupReadsNative(byte[] sequences, long[] lengths,
+                                                 byte[] names, long[] nameOffsets);
 }

@@ -33,6 +33,17 @@ import java.util.Map;
 public final class GenomicStreamWriter implements AutoCloseable {
 
     public static final String LAYOUT = "blocks_v1";
+    /** blocks_v1 with the reads reordered by sequence and
+     *  {@code genomic_index/input_index} restoring input order (M103). A
+     *  distinct value so readers that predate it refuse the run rather
+     *  than read it in stored order (format-spec 10.12.7). */
+    public static final String LAYOUT_GROUPED = "blocks_v1_grouped";
+
+    /** Whether {@code layout} is one of the blocks layouts
+     *  ({@code blocks_v1} or {@code blocks_v1_grouped}). */
+    public static boolean isBlocksLayout(String layout) {
+        return LAYOUT.equals(layout) || LAYOUT_GROUPED.equals(layout);
+    }
     public static final int DEFAULT_BLOCK_READS = 1_000_000;
     /* A block is the unit of encode concurrency and of residency, so a
  * big one costs both: the pool cannot start a block that is still
@@ -116,7 +127,11 @@ public final class GenomicStreamWriter implements AutoCloseable {
                           String readRole,
                           /** M97 — REF_DIFF_V2 slice byte budget; 0 = the
                            *  fixed 10,000-read rule. */
-                          long refDiffSliceBytes) {
+                          long refDiffSliceBytes,
+                          /** M103 — buffer the run, reorder it by sequence at
+                           *  close, store the permutation (layout
+                           *  {@code blocks_v1_grouped}). */
+                          boolean groupReads) {
         public Options {
             if (blockReads < 1 || blockBytes < 1) {
                 throw new IllegalArgumentException("blockReads and blockBytes must be >= 1");
@@ -124,6 +139,21 @@ public final class GenomicStreamWriter implements AutoCloseable {
             signalCodecOverrides = signalCodecOverrides == null ? Map.of() : Map.copyOf(signalCodecOverrides);
             provenanceRecords = provenanceRecords == null ? List.of() : List.copyOf(provenanceRecords);
             if (signalCompression == null) signalCompression = Compression.ZLIB;
+        }
+
+        /** Pre-M103 signature (15 components); reads are not grouped. */
+        public Options(AcquisitionMode acquisitionMode, String referenceUri, String platform,
+                       String sampleName, Map<String, byte[]> referenceChromSeqs,
+                       boolean embedReference, int blockReads, long blockBytes,
+                       boolean optDisableQualitiesV5,
+                       Map<String, Compression> signalCodecOverrides,
+                       Compression signalCompression, boolean optLegacyWholeChannel,
+                       List<ProvenanceRecord> provenanceRecords, String readRole,
+                       long refDiffSliceBytes) {
+            this(acquisitionMode, referenceUri, platform, sampleName,
+                referenceChromSeqs, embedReference, blockReads, blockBytes,
+                optDisableQualitiesV5, signalCodecOverrides, signalCompression,
+                optLegacyWholeChannel, provenanceRecords, readRole, refDiffSliceBytes, false);
         }
 
         /** Pre-M97 signature (13 components); no read role, the fixed
@@ -138,7 +168,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
             this(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, blockReads, blockBytes,
                 optDisableQualitiesV5, signalCodecOverrides, signalCompression,
-                optLegacyWholeChannel, provenanceRecords, null, 0L);
+                optLegacyWholeChannel, provenanceRecords, null, 0L, false);
         }
 
         /** The run-level metadata of {@code run}, default block policy. */
@@ -148,35 +178,35 @@ public final class GenomicStreamWriter implements AutoCloseable {
                 DEFAULT_BLOCK_READS, DEFAULT_BLOCK_BYTES, run.optDisableQualitiesV5(),
                 run.signalCodecOverrides(), run.signalCompression(),
                 run.optLegacyWholeChannel(), run.provenanceRecords(),
-                run.readRole(), run.refDiffSliceBytes());
+                run.readRole(), run.refDiffSliceBytes(), run.optGroupReads());
         }
 
         public Options withBlockPolicy(int reads, long bytes) {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, reads, bytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, optLegacyWholeChannel, provenanceRecords,
-                readRole, refDiffSliceBytes);
+                readRole, refDiffSliceBytes, groupReads);
         }
 
         public Options withLegacy(boolean legacy) {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, blockReads, blockBytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, legacy, provenanceRecords,
-                readRole, refDiffSliceBytes);
+                readRole, refDiffSliceBytes, groupReads);
         }
 
         public Options withReference(Map<String, byte[]> reference, boolean embed) {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 reference, embed, blockReads, blockBytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, optLegacyWholeChannel, provenanceRecords,
-                readRole, refDiffSliceBytes);
+                readRole, refDiffSliceBytes, groupReads);
         }
 
         public Options withProvenance(List<ProvenanceRecord> records) {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, blockReads, blockBytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, optLegacyWholeChannel, records,
-                readRole, refDiffSliceBytes);
+                readRole, refDiffSliceBytes, groupReads);
         }
 
         /** Same options with the given {@code @read_role} value (M97). */
@@ -184,7 +214,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, blockReads, blockBytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, optLegacyWholeChannel, provenanceRecords,
-                role, refDiffSliceBytes);
+                role, refDiffSliceBytes, groupReads);
         }
 
         /** Same options with the given REF_DIFF_V2 slice byte budget (M97). */
@@ -192,7 +222,15 @@ public final class GenomicStreamWriter implements AutoCloseable {
             return new Options(acquisitionMode, referenceUri, platform, sampleName,
                 referenceChromSeqs, embedReference, blockReads, blockBytes, optDisableQualitiesV5,
                 signalCodecOverrides, signalCompression, optLegacyWholeChannel, provenanceRecords,
-                readRole, sliceBytes);
+                readRole, sliceBytes, groupReads);
+        }
+
+        /** Same options with read grouping (M103) switched on or off. */
+        public Options withGroupReads(boolean group) {
+            return new Options(acquisitionMode, referenceUri, platform, sampleName,
+                referenceChromSeqs, embedReference, blockReads, blockBytes, optDisableQualitiesV5,
+                signalCodecOverrides, signalCompression, optLegacyWholeChannel, provenanceRecords,
+                readRole, refDiffSliceBytes, group);
         }
     }
 
@@ -217,6 +255,11 @@ public final class GenomicStreamWriter implements AutoCloseable {
     private boolean embedded;
     private boolean closed;
     private final List<WrittenGenomicRun> legacyParts = new ArrayList<>();
+    /** M103: the buffered batches of a grouped run, and (once close has
+     *  computed it) the permutation: row j holds the input index of the
+     *  read stored at row j. */
+    private final List<WrittenGenomicRun> groupParts = new ArrayList<>();
+    private int[] inputIndex;
     private final int threads;
     private final global.thalion.ttio.Threads.PoolScope scope;
     private final java.util.ArrayDeque<InFlight> inflight = new java.util.ArrayDeque<>();
@@ -294,6 +337,21 @@ public final class GenomicStreamWriter implements AutoCloseable {
                 + "not fit the quality distribution of platform '"
                 + options.platform() + "' (M97).");
         }
+        if (options.groupReads()) {
+            if (options.optLegacyWholeChannel()) {
+                throw new IllegalArgumentException(
+                    "groupReads needs the blocks_v1 layout, not the legacy whole-channel one");
+            }
+            if (options.referenceChromSeqs() != null) {
+                throw new IllegalArgumentException(
+                    "groupReads applies to runs without a reference; aligned runs keep "
+                    + "coordinate order for REF_DIFF_V2");
+            }
+            if (!global.thalion.ttio.codecs.SeqGroup.isAvailable()) {
+                throw new IllegalStateException(
+                    "groupReads requires libttio_rans_jni (the native library is not loaded)");
+            }
+        }
         this.opt = options;
         this.threads = Math.max(1, threads);
         this.scope = global.thalion.ttio.Threads.pool(this.threads);
@@ -333,10 +391,18 @@ public final class GenomicStreamWriter implements AutoCloseable {
      *  ignored, the writer's options apply. */
     public void appendBatch(WrittenGenomicRun batch) {
         if (closed) throw new IllegalStateException("writer is closed");
+        appendInternal(batch);
+    }
+
+    private void appendInternal(WrittenGenomicRun batch) {
         int n = batch.readCount();
         if (n == 0) return;
         if (opt.optLegacyWholeChannel()) {
             legacyParts.add(batch);
+            return;
+        }
+        if (opt.groupReads() && inputIndex == null) {
+            groupParts.add(batch);
             return;
         }
         List<String> chroms = batch.chromosomes();
@@ -512,6 +578,15 @@ public final class GenomicStreamWriter implements AutoCloseable {
             return;
         }
         try {
+            if (opt.groupReads()) {
+                // M103: reorder the whole run by sequence, then block it
+                // as usual (format-spec 10.12.7).
+                WrittenGenomicRun whole = groupParts.isEmpty() ? null
+                    : GenomicBlocks.concatRuns(groupParts);
+                groupParts.clear();
+                inputIndex = whole == null ? new int[0] : GenomicBlocks.groupOrder(whole);
+                if (whole != null) appendInternal(GenomicBlocks.takeRun(whole, inputIndex));
+            }
             flush();
             drain(0);
             if (rg == null) ensureLayout(null);
@@ -579,7 +654,7 @@ public final class GenomicStreamWriter implements AutoCloseable {
         run.setAttribute("sample_name", opt.sampleName());
         run.setAttribute("read_count", 0L);
         run.setAttribute("base_count", 0L);
-        run.setAttribute("layout", LAYOUT);
+        run.setAttribute("layout", opt.groupReads() ? LAYOUT_GROUPED : LAYOUT);
         run.setAttribute("block_policy", "reads=" + opt.blockReads() + ",bytes=" + opt.blockBytes());
         // Non-default writer policy shapes the coded blobs; a per-AU
         // restore re-encodes with it, so it is persisted on the run
@@ -621,6 +696,11 @@ public final class GenomicStreamWriter implements AutoCloseable {
         StorageGroup idx = run.createGroup("genomic_index");
         for (String[] a : INDEX_ARRAYS) {
             idxDs.put(a[0], idx.createDataset(a[0], Precision.valueOf(a[1]), 0,
+                GenomicIndex.CHUNK_SIZE, Compression.ZLIB, GenomicIndex.COMPRESSION_LEVEL, true));
+        }
+        if (opt.groupReads()) {
+            // M103: row j holds the input index of the read stored at row j.
+            idxDs.put("input_index", idx.createDataset("input_index", Precision.UINT32, 0,
                 GenomicIndex.CHUNK_SIZE, Compression.ZLIB, GenomicIndex.COMPRESSION_LEVEL, true));
         }
         run.createGroup("signal_channels");
@@ -688,6 +768,12 @@ public final class GenomicStreamWriter implements AutoCloseable {
         idxDs.get("mapping_qualities").append(block.mappingQualities());
         idxDs.get("flags").append(block.flags());
         idxDs.get("chromosome_ids").append(ids);
+        if (opt.groupReads()) {
+            // Blocks are written in order, so this block's rows start at
+            // the reads written so far.
+            int r0 = (int) readCount;
+            idxDs.get("input_index").append(java.util.Arrays.copyOfRange(inputIndex, r0, r0 + n));
+        }
     }
 
     private void writeCloseTables() {

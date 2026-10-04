@@ -26,17 +26,36 @@ import java.util.function.Supplier;
  * @param batches      supplies a fresh iterator over the batches
  * @param blockReads   writer block policy; {@code null} = writer default
  * @param blockBytes   writer block policy; {@code null} = writer default
+ * @param groupReads   M103: group the reads by sequence before blocking
+ *                     (layout {@code blocks_v1_grouped}; no reference)
  */
 public record GenomicStreamSource(String name, Supplier<Iterator<WrittenGenomicRun>> batches,
                                   Path referenceFasta, boolean embedReference,
                                   Integer blockReads, Long blockBytes,
-                                  boolean optLegacyWholeChannel) {
+                                  boolean optLegacyWholeChannel, boolean groupReads) {
+
+    /** Pre-M103 signature: reads are not grouped. */
+    public GenomicStreamSource(String name, Supplier<Iterator<WrittenGenomicRun>> batches,
+                               Path referenceFasta, boolean embedReference,
+                               Integer blockReads, Long blockBytes,
+                               boolean optLegacyWholeChannel) {
+        this(name, batches, referenceFasta, embedReference, blockReads, blockBytes,
+            optLegacyWholeChannel, false);
+    }
 
     /** Same source with a writer block policy and layout choice
      *  ({@code null} keeps the writer defaults). */
     public GenomicStreamSource withPolicy(Integer blockReads, Long blockBytes, boolean legacy) {
         return new GenomicStreamSource(name, batches, referenceFasta, embedReference,
-            blockReads, blockBytes, legacy);
+            blockReads, blockBytes, legacy, groupReads);
+    }
+
+    /** As {@link #withPolicy(Integer, Long, boolean)}, also choosing read
+     *  grouping (M103). */
+    public GenomicStreamSource withPolicy(Integer blockReads, Long blockBytes, boolean legacy,
+                                          boolean group) {
+        return new GenomicStreamSource(name, batches, referenceFasta, embedReference,
+            blockReads, blockBytes, legacy, group);
     }
 
     /** Write the run into {@code /study} {@code study}; returns the reads
@@ -59,6 +78,7 @@ public record GenomicStreamSource(String name, Supplier<Iterator<WrittenGenomicR
                                               blockBytes != null ? blockBytes : o.blockBytes());
                     }
                     if (optLegacyWholeChannel) o = o.withLegacy(true);
+                    if (groupReads) o = o.withGroupReads(true);
                     // Same rule as the producer side, so the two halves
                     // of the pipeline budget are sized off one count.
                     writer = new GenomicStreamWriter(

@@ -159,14 +159,18 @@ static NSString *rsSortedNames(NSDictionary *runs)
     NSMutableData *sequences = [NSMutableData data];
     NSMutableData *qualities = [NSMutableData data];
 
-    uint64_t running = 0;
     for (NSUInteger i = 0; i < n; i++) {
         posPtr[i]  = [idx positionAt:i];
         mapqPtr[i] = [idx mappingQualityAt:i];
         flagPtr[i] = [idx flagsAt:i];
         [chromosomes addObject:([idx chromosomeAt:i] ?: @"*")];
-
-        TTIOAlignedRead *read = [readSideRun readAtIndex:i error:NULL];
+    }
+    // Reads in input order, like the index above; the sequential walk
+    // decodes each block once, also for a grouped run (M103).
+    __block uint64_t running = 0;
+    [readSideRun iterReadsFrom:0 to:n error:NULL
+                    usingBlock:^(TTIOAlignedRead *read, NSUInteger i, BOOL *stop) {
+        (void)stop;
         NSString *seq  = read.sequence ?: @"";
         NSData   *qual = read.qualities ?: [NSData data];
         NSData   *seqBytes = [seq dataUsingEncoding:NSASCIIStringEncoding]
@@ -185,6 +189,16 @@ static NSString *rsSortedNames(NSDictionary *runs)
         [tags addObject:(read.tags ?: @"")];
         mposPtr[i] = read.matePosition;
         tlenPtr[i] = read.templateLength;
+    }];
+    // A read that fails to decode ends the walk; the rest stay empty,
+    // as a nil read did before.
+    for (NSUInteger i = readNames.count; i < n; i++) {
+        offPtr[i] = running;
+        lenPtr[i] = 0;
+        [readNames addObject:@""];
+        [cigars addObject:@"*"];
+        [mateChromosomes addObject:@"*"];
+        [tags addObject:@""];
     }
 
     TTIOAcquisitionMode mode = readSideRun.acquisitionMode;

@@ -125,8 +125,14 @@ public final class EncryptedTransport {
                 // them with a wire feature token so receivers know the
                 // stream needs them.
                 List<String> features = new ArrayList<>(flags.features());
-                if (genomicLayouts.containsValue("blocks_v1")) {
+                if (genomicLayouts.containsValue("blocks_v1")
+                        || genomicLayouts.containsValue("blocks_v1_grouped")) {
                     features.add(PacketType.TRANSPORT_BLOCKS_V1_FEATURE);
+                }
+                // v0.13 (M103): a grouped run's BlockSidecars end with the
+                // block's slice of genomic_index/input_index.
+                if (genomicLayouts.containsValue("blocks_v1_grouped")) {
+                    features.add(PacketType.TRANSPORT_BLOCKS_V1_GROUPED_FEATURE);
                 }
                 writer.writeStreamHeader("1.2", title, isa, features,
                                           msRunNames.size() + genomicRunNames.size());
@@ -179,8 +185,8 @@ public final class EncryptedTransport {
                         int firstGenomicDid = did;
                         for (String runName : genomicRunNames) {
                             emitGenomicDatasetHeader(writer, gRuns, runName, did);
-                            if ("blocks_v1".equals(
-                                    genomicLayouts.get(runName))) {
+                            if (global.thalion.ttio.genomics.GenomicStreamWriter
+                                    .isBlocksLayout(genomicLayouts.get(runName))) {
                                 emitBlocksV1Sidecars(writer, gRuns,
                                                      runName, did);
                             }
@@ -341,6 +347,15 @@ public final class EncryptedTransport {
                         }
                     }
                 }
+                // M103: a grouped run carries each block's input_index
+                // rows at the end of its BlockSidecar (v0.13).
+                long[] inputIndex = null;
+                if ("blocks_v1_grouped".equals(attrStr(run, "layout", ""))) {
+                    try (StorageGroup idx = run.openGroup("genomic_index");
+                         StorageDataset ds = idx.openDataset("input_index")) {
+                        inputIndex = toUnsignedLongs(ds.readAll());
+                    }
+                }
 
                 com.fasterxml.jackson.databind.ObjectMapper om =
                     new com.fasterxml.jackson.databind.ObjectMapper();
@@ -395,6 +410,13 @@ public final class EncryptedTransport {
                         putLE(bp, data.length, 4);
                         bp.writeBytes(data);
                     }
+                    if (inputIndex != null) {
+                        // v0.13: the block's rows of genomic_index/input_index.
+                        int r0 = (int) t.readStartAt(b);
+                        for (int k = 0; k < t.nReadsAt(b); k++) {
+                            putLE(bp, inputIndex[r0 + k], 4);
+                        }
+                    }
                     writer.emitRawPacket(PacketType.BLOCK_SIDECAR, 0,
                                          datasetId, b, bp.toByteArray());
                 }
@@ -402,6 +424,18 @@ public final class EncryptedTransport {
                 for (StorageDataset ds : blobDs.values()) ds.close();
             }
         }
+    }
+
+    /** A uint32 dataset's values, whatever array type the provider
+     *  hands back. */
+    private static long[] toUnsignedLongs(Object raw) {
+        if (raw instanceof int[] a) {
+            long[] out = new long[a.length];
+            for (int i = 0; i < a.length; i++) out[i] = Integer.toUnsignedLong(a[i]);
+            return out;
+        }
+        if (raw instanceof long[] l) return l;
+        throw new IllegalStateException("input_index has an unexpected type");
     }
 
     private static long longAttr(StorageGroup g, String name) {
@@ -431,6 +465,9 @@ public final class EncryptedTransport {
         long nBases;
         Map<String, long[]> channels = new LinkedHashMap<>();
         Map<String, byte[]> blobs = new LinkedHashMap<>();
+        /** v0.13 (M103): the block's input_index rows of a
+         *  blocks_v1_grouped run; null when the sidecar carries none. */
+        int[] inputIndex;
     }
 
     private static String getLEString(ByteBuffer bb) {
@@ -495,6 +532,18 @@ public final class EncryptedTransport {
             byte[] data = new byte[bl];
             bb.get(data);
             bs.blobs.put(name, data);
+        }
+        // v0.13 (M103): a blocks_v1_grouped run's sidecar ends with the
+        // block's input_index rows, n_reads x uint32.
+        if (bb.hasRemaining()) {
+            long want = 4L * Integer.toUnsignedLong(bs.nReads);
+            if (bb.remaining() != want) {
+                throw new IllegalStateException("BlockSidecar " + bs.blockIndex + ": "
+                    + bb.remaining() + " trailing bytes, expected " + want
+                    + " of input_index");
+            }
+            bs.inputIndex = new int[bs.nReads];
+            for (int k = 0; k < bs.nReads; k++) bs.inputIndex[k] = bb.getInt();
         }
         return bs;
     }
@@ -773,6 +822,7 @@ public final class EncryptedTransport {
         // The blocks_v1 wire token is transport-scoped and never a
         // container feature flag.
         featureSet.remove(PacketType.TRANSPORT_BLOCKS_V1_FEATURE);
+        featureSet.remove(PacketType.TRANSPORT_BLOCKS_V1_GROUPED_FEATURE);
         featureSet.add(FeatureFlags.OPT_PER_AU_ENCRYPTION);
         boolean anyHeaderEnc = datasets.values().stream()
             .anyMatch(d -> d.usedEncryptedHeaders);
@@ -1671,6 +1721,30 @@ public final class EncryptedTransport {
                             (String) a[0], (Enums.Precision) a[1], 0,
                             65536, Enums.Compression.ZLIB, 6, true)) {
                         ds.append(a[2]);
+                    }
+                }
+                if ("blocks_v1_grouped".equals(sc.layout)) {
+                    // M103: the permutation back to input order, from the
+                    // sidecars' slices in block order.
+                    int total = 0;
+                    for (BlockSidecar bs : sidecars) {
+                        if (bs.inputIndex == null) {
+                            throw new IllegalStateException("genomic run '" + acc.name
+                                + "': blocks_v1_grouped stream without input_index "
+                                + "in its BlockSidecars");
+                        }
+                        total += bs.inputIndex.length;
+                    }
+                    int[] ii = new int[total];
+                    int w = 0;
+                    for (BlockSidecar bs : sidecars) {
+                        System.arraycopy(bs.inputIndex, 0, ii, w, bs.inputIndex.length);
+                        w += bs.inputIndex.length;
+                    }
+                    try (StorageDataset ds = idx.createDataset(
+                            "input_index", Enums.Precision.UINT32, 0,
+                            65536, Enums.Compression.ZLIB, 6, true)) {
+                        ds.append(ii);
                     }
                 }
                 writeNameTable(idx, "chromosome_names", sc.chromNames);

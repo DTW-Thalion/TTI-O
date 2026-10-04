@@ -41,6 +41,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSDictionary<NSString *, NSNumber *> *signalCodecOverrides;
 @property (nonatomic) TTIOCompression signalCompression;
 @property (nonatomic) BOOL optLegacyWholeChannel;
+/** M103: buffer the whole run, reorder it by sequence at close
+ *  (<code>ttio_seq_group</code>), block it as usual and store
+ *  <code>genomic_index/input_index</code> under the layout
+ *  <code>blocks_v1_grouped</code> (format-spec 10.12.7). Refused with a
+ *  reference, with the legacy layout, and without libttio_rans.
+ *  Memory is unbounded in the run size. Python: <code>group_reads</code>;
+ *  Java: <code>groupReads</code>. Default NO. */
+@property (nonatomic) BOOL groupReads;
 @property (nonatomic, copy) NSArray<TTIOProvenanceRecord *> *provenanceRecords;
 /** Worker threads for block encode (0 = TTIO_THREADS, else cores minus 2;
  *  1 = the serial path). With more than one, completed blocks encode on a
@@ -70,6 +78,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 /** The layout attribute value, <code>blocks_v1</code>. */
 + (NSString *)layout;
+/** The layout of a run written with <code>groupReads</code>,
+ *  <code>blocks_v1_grouped</code> (M103). */
++ (NSString *)groupedLayout;
+/** Why <code>options</code> cannot group reads (a reference, the legacy
+ *  layout, or no libttio_rans), or nil when they can or do not ask to.
+ *  The initialiser raises NSInvalidArgumentException with this message. */
++ (nullable NSString *)groupReadsRefusalForOptions:(TTIOGenomicStreamWriterOptions *)options;
 /** Chunk of the unfiltered channel datasets (256 KiB). */
 + (NSUInteger)channelChunk;
 /** Block index schema, in the column order of format-spec 10.12.2:

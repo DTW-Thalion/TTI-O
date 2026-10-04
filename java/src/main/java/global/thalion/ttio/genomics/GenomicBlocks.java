@@ -144,6 +144,81 @@ public final class GenomicBlocks {
             first.readRole(), first.refDiffSliceBytes(), tags);
     }
 
+    /** The reads of {@code run} in the order {@code order} (read
+     *  {@code order[j]} at row {@code j}), offsets recomputed (M103).
+     *  Run-level metadata is shared; provenance is dropped. */
+    public static WrittenGenomicRun takeRun(WrittenGenomicRun run, int[] order) {
+        int n = order.length;
+        long[] positions = new long[n];
+        byte[] mapqs = new byte[n];
+        int[] flags = new int[n];
+        int[] lengths = new int[n];
+        long[] matePos = new long[n];
+        int[] tlens = new int[n];
+        List<String> cigars = new ArrayList<>(n), names = new ArrayList<>(n),
+                     mateChroms = new ArrayList<>(n), chroms = new ArrayList<>(n);
+        List<String> tags = run.tags() == null ? null : new ArrayList<>(n);
+        long total = 0;
+        for (int j = 0; j < n; j++) {
+            int i = order[j];
+            positions[j] = run.positions()[i];
+            mapqs[j] = run.mappingQualities()[i];
+            flags[j] = run.flags()[i];
+            lengths[j] = run.lengths()[i];
+            matePos[j] = run.matePositions()[i];
+            tlens[j] = run.templateLengths()[i];
+            cigars.add(run.cigars().get(i));
+            names.add(run.readNames().get(i));
+            mateChroms.add(run.mateChromosomes().get(i));
+            chroms.add(run.chromosomes().get(i));
+            if (tags != null) tags.add(run.tags().get(i));
+            total += lengths[j];
+        }
+        boolean withQuals = run.qualities().length > 0;
+        byte[] seqs = new byte[(int) total];
+        byte[] quals = withQuals ? new byte[(int) total] : new byte[0];
+        int o = 0;
+        for (int j = 0; j < n; j++) {
+            int src = (int) run.offsets()[order[j]];
+            int len = lengths[j];
+            System.arraycopy(run.sequences(), src, seqs, o, len);
+            if (withQuals) System.arraycopy(run.qualities(), src, quals, o, len);
+            o += len;
+        }
+        return new WrittenGenomicRun(
+            run.acquisitionMode(), run.referenceUri(), run.platform(), run.sampleName(),
+            positions, mapqs, flags, seqs, quals,
+            GenomicIndex.offsetsFromLengths(lengths), lengths,
+            cigars, names, mateChroms, matePos, tlens, chroms,
+            run.signalCompression(), run.signalCodecOverrides(), List.of(),
+            run.embedReference(), run.referenceChromSeqs(), run.externalReferencePath(),
+            null, run.optDisableQualitiesV5(), run.optLegacyWholeChannel(),
+            run.readRole(), run.refDiffSliceBytes(), tags, run.optGroupReads());
+    }
+
+    /** The read-grouping permutation of {@code run} (M103): reads are
+     *  grouped by sequence within each chromosome label, labels in
+     *  first-seen order, so a block still never spans two labels. Entry
+     *  {@code j} is the input index of the read stored at row {@code j}. */
+    public static int[] groupOrder(WrittenGenomicRun run) {
+        int n = run.readCount();
+        if (n == 0) return new int[0];
+        Map<String, List<Integer>> labels = new LinkedHashMap<>();
+        List<String> chroms = run.chromosomes();
+        for (int i = 0; i < n; i++) labels.computeIfAbsent(chroms.get(i), k -> new ArrayList<>()).add(i);
+        int[] out = new int[n];
+        int w = 0;
+        for (List<Integer> members : labels.values()) {
+            int[] m = new int[members.size()];
+            for (int k = 0; k < m.length; k++) m[k] = members.get(k);
+            WrittenGenomicRun sub = labels.size() == 1 ? run : takeRun(run, m);
+            int[] local = global.thalion.ttio.codecs.SeqGroup.group(
+                sub.sequences(), sub.lengths(), sub.readNames());
+            for (int k : local) out[w++] = m[k];
+        }
+        return out;
+    }
+
     /** Encode one block's channels through the whole-channel writer. The
      *  forced codecs of format-spec 10.12.3 apply: cigars RANS_ORDER0,
      *  qualities FQZCOMP_NX16_Z (RANS_ORDER0 when the block holds a

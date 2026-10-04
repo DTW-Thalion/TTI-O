@@ -52,6 +52,10 @@ public class GenomicRun
     // "whole" for the v1.8 whole-channel layout.
     private final String layout;
     private final BlockTable blockTable;
+    // blocks_v1_grouped (M103): row j's input index, and its inverse
+    // (input index -> stored row). Null for every other layout.
+    private int[] inputIndex;
+    private int[] storedOf;
     private int cachedBlock = -1;
     private GenomicRun cachedView;
     private BlockView.Handle cachedHandle;
@@ -195,18 +199,32 @@ public class GenomicRun
     public GenomicIndex index() {
         if (index == null) {
             try (StorageGroup ig = runGroup.openGroup("genomic_index")) {
-                index = GenomicIndex.readFrom(ig);
+                GenomicIndex stored = GenomicIndex.readFrom(ig);
+                // A grouped run presents its index in input order (M103).
+                index = storedOf != null ? stored.permuted(storedOf) : stored;
             }
         }
         return index;
     }
 
+    /** For a {@code blocks_v1_grouped} run (M103), entry {@code j} is the
+     *  input index of the read stored at row {@code j}; {@code null}
+     *  otherwise. Every read accessor already presents input order; this
+     *  maps the stored rows that {@link #iterBlocks} reports
+     *  ({@code firstRead + k}). A copy. */
+    public int[] inputIndex() { return inputIndex == null ? null : inputIndex.clone(); }
+
+    /** Stored row of input read {@code i}: itself unless the run is
+     *  grouped. */
+    private int storedRow(int i) { return storedOf != null ? storedOf[i] : i; }
+
     public int readCount() {
         return blockTable != null ? (int) blockTable.readCount() : index().count();
     }
 
-    /** {@code "blocks_v1"} or {@code "whole"} (the v1.8 whole-channel
-     *  layout). */
+    /** {@code "blocks_v1"}, {@code "blocks_v1_grouped"} (reads stored
+     *  grouped by sequence, M103) or {@code "whole"} (the v1.8
+     *  whole-channel layout). */
     public String layout() { return layout; }
 
     /** Number of blocks; 1 for a whole-channel run. */
@@ -237,8 +255,14 @@ public class GenomicRun
         String layout = stringAttr(runGroup, "layout", "whole");
         GenomicIndex idx = null;
         BlockTable table = null;
-        if ("blocks_v1".equals(layout)) {
+        int[] inputIndex = null;
+        if (GenomicStreamWriter.isBlocksLayout(layout)) {
             table = BlockTable.read(runGroup);
+            if (GenomicStreamWriter.LAYOUT_GROUPED.equals(layout)) {
+                // M103: reads are stored grouped by sequence; input_index
+                // restores input order (format-spec 10.12.7).
+                inputIndex = readInputIndex(runGroup, name, table);
+            }
         } else if ("whole".equals(layout)) {
             try (StorageGroup ig = runGroup.openGroup("genomic_index")) {
                 idx = GenomicIndex.readFrom(ig);
@@ -246,7 +270,8 @@ public class GenomicRun
         } else {
             throw new IllegalStateException(
                 "genomic run '" + name + "': unsupported layout '" + layout
-                + "' (this reader knows the whole-channel layout and blocks_v1)");
+                + "' (this reader knows the whole-channel layout, blocks_v1 and "
+                + "blocks_v1_grouped)");
         }
         Object modeObj = runGroup.getAttribute("acquisition_mode");
         AcquisitionMode mode = AcquisitionMode.values()[
@@ -259,10 +284,56 @@ public class GenomicRun
         GenomicRun run = new GenomicRun(name, mode, modality, refUri, platform,
                                         sampleName, idx, runGroup, prov, layout, table);
         run.injectedResolver = resolver;
+        if (inputIndex != null) {
+            int[] inv = new int[inputIndex.length];
+            for (int j = 0; j < inputIndex.length; j++) inv[inputIndex[j]] = j;
+            run.inputIndex = inputIndex;
+            run.storedOf = inv;
+        }
         // @read_role is absent on pre-M97 files; null, not "".
         String role = stringAttr(runGroup, "read_role", null);
         run.readRole = (role == null || role.isEmpty()) ? null : role;
         return run;
+    }
+
+    /** {@code genomic_index/input_index} of a grouped run, checked to be a
+     *  permutation of its reads. */
+    private static int[] readInputIndex(StorageGroup runGroup, String name, BlockTable table) {
+        long n = table.readCount();
+        int[] ii;
+        try (StorageGroup ig = runGroup.openGroup("genomic_index")) {
+            if (!ig.hasChild("input_index")) {
+                throw new IllegalStateException("genomic run '" + name
+                    + "': blocks_v1_grouped without genomic_index/input_index");
+            }
+            try (StorageDataset ds = ig.openDataset("input_index")) {
+                Object raw = ds.readAll();
+                if (raw instanceof int[] a) {
+                    ii = a;
+                } else if (raw instanceof long[] l) {
+                    ii = new int[l.length];
+                    for (int k = 0; k < l.length; k++) {
+                        ii[k] = l[k] < 0 || l[k] > Integer.MAX_VALUE ? -1 : (int) l[k];
+                    }
+                } else {
+                    throw new IllegalStateException("genomic run '" + name
+                        + "': input_index has an unexpected type");
+                }
+            }
+        }
+        boolean ok = ii.length == n;
+        if (ok) {
+            boolean[] seen = new boolean[ii.length];
+            for (int v : ii) {
+                if (v < 0 || v >= ii.length || seen[v]) { ok = false; break; }
+                seen[v] = true;
+            }
+        }
+        if (!ok) {
+            throw new IllegalStateException("genomic run '" + name
+                + "': input_index is not a permutation of its " + n + " reads");
+        }
+        return ii;
     }
 
     // ── blocks_v1 dispatch ─────────────────────────────────────────
@@ -323,6 +394,7 @@ public class GenomicRun
     public java.util.Iterator<AlignedRead> iterReads(int start, int stop) {
         int n = readCount();
         int lo = Math.max(start, 0), hi = Math.min(stop, n);
+        if (storedOf != null) return iterGrouped(lo, hi);
         return new java.util.Iterator<>() {
             int i = lo;
             @Override public boolean hasNext() { return i < hi; }
@@ -335,6 +407,59 @@ public class GenomicRun
 
     /** Every read in order; see {@link #iterReads(int, int)}. */
     public java.util.Iterator<AlignedRead> iterReads() { return iterReads(0, readCount()); }
+
+    /** Input-order reads gathered per pass of a grouped run (M103). */
+    static final int GROUPED_CHUNK = 1 << 22;
+
+    /** Reads {@code [lo, hi)} of a grouped run in input order. Each pass
+     *  gathers up to {@link #GROUPED_CHUNK} input-order reads: their stored
+     *  rows are visited block by block, each block decoded once per pass,
+     *  and the reads are handed out in input order. A pass holds its reads
+     *  in memory; a range of a few blocks' worth decodes only those
+     *  blocks. Python: {@code GenomicRun._iter_grouped}. */
+    private java.util.Iterator<AlignedRead> iterGrouped(int lo, int hi) {
+        return new java.util.Iterator<>() {
+            int c0 = lo;          // first input index of the next pass
+            AlignedRead[] out = new AlignedRead[0];
+            int k = 0;
+            @Override public boolean hasNext() { return k < out.length || c0 < hi; }
+            @Override public AlignedRead next() {
+                if (k >= out.length) {
+                    if (c0 >= hi) throw new NoSuchElementException();
+                    int c1 = (int) Math.min((long) hi, (long) c0 + GROUPED_CHUNK);
+                    out = gatherGrouped(c0, c1);
+                    k = 0;
+                    c0 = c1;
+                }
+                AlignedRead r = out[k];
+                out[k++] = null;
+                return r;
+            }
+        };
+    }
+
+    /** Input reads {@code [c0, c1)} of a grouped run, each block decoded
+     *  once. */
+    private AlignedRead[] gatherGrouped(int c0, int c1) {
+        int m = c1 - c0;
+        long[] keyed = new long[m];
+        for (int t = 0; t < m; t++) keyed[t] = ((long) storedOf[c0 + t] << 32) | t;
+        java.util.Arrays.sort(keyed);    // stored row, then position (stable)
+        AlignedRead[] out = new AlignedRead[m];
+        int k = 0;
+        while (k < m) {
+            int s = (int) (keyed[k] >>> 32);
+            int b = blockTable.blockFor(s);
+            int r0 = (int) blockTable.readStart[b];
+            int r1 = r0 + blockTable.nReads[b];
+            GenomicRun view = blockView(b);
+            while (k < m && (int) (keyed[k] >>> 32) < r1) {
+                out[(int) keyed[k]] = view.objectAtIndex((int) (keyed[k] >>> 32) - r0);
+                k++;
+            }
+        }
+        return out;
+    }
 
     private record InFlightView(GenomicRun view, BlockView.Handle handle) {}
 
@@ -368,7 +493,7 @@ public class GenomicRun
         int n = readCount();
         int lo = Math.max(start, 0), hi = Math.min(stop, n);
         int nthreads = Math.max(1, threads);
-        if (blockTable == null || nthreads <= 1 || lo >= hi) return iterReads(lo, hi);
+        if (blockTable == null || storedOf != null || nthreads <= 1 || lo >= hi) return iterReads(lo, hi);
         final int bFirst = blockTable.blockFor(lo), bLast = blockTable.blockFor(hi - 1);
         // The serial consumer only needs enough decode-ahead to never
         // stall; more in flight is pure memory.
@@ -675,8 +800,9 @@ public class GenomicRun
                 "read index " + i + " out of range [0, " + readCount() + ")");
         }
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).objectAtIndex(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).objectAtIndex(s - (int) blockTable.readStart[b]);
         }
         long offset = index().offsetAt(i);
         int  length = index().lengthAt(i);
@@ -744,8 +870,9 @@ public class GenomicRun
         }
         if (blockTable != null) {
             if (!hasTagsChannel()) return "";
-            int b = blockTable.blockFor(i);
-            return blockView(b).tagsAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).tagsAt(s - (int) blockTable.readStart[b]);
         }
         List<String> tags = allTags();
         return tags.isEmpty() ? "" : tags.get(i);
@@ -1119,8 +1246,9 @@ public class GenomicRun
      *  (no child datasets); this method short-circuits there. */
     public String readNameAt(int i) {
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).readNameAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).readNameAt(s - (int) blockTable.readStart[b]);
         }
         if (index().count() == 0) {
             // Defensive: read at index 0 on an empty run is an
@@ -1192,8 +1320,9 @@ public class GenomicRun
      */
     public String cigarAt(int i) {
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).cigarAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).cigarAt(s - (int) blockTable.readStart[b]);
         }
         List<String> cached = decodedCigars;
         if (cached != null) {
@@ -1388,8 +1517,9 @@ public class GenomicRun
      *  raise {@code IllegalStateException}. */
     public String mateChromAt(int i) {
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).mateChromAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).mateChromAt(s - (int) blockTable.readStart[b]);
         }
         if (isMateInfoInlineV2()) {
             _decodeMateV2();
@@ -1407,8 +1537,9 @@ public class GenomicRun
      *  {@code i}. Inline_v2 only — see {@link #mateChromAt}. */
     public long matePosAt(int i) {
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).matePosAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).matePosAt(s - (int) blockTable.readStart[b]);
         }
         if (isMateInfoInlineV2()) {
             _decodeMateV2();
@@ -1421,8 +1552,9 @@ public class GenomicRun
      *  {@code i}. Inline_v2 only — see {@link #mateChromAt}. */
     public int mateTlenAt(int i) {
         if (blockTable != null) {
-            int b = blockTable.blockFor(i);
-            return blockView(b).mateTlenAt(i - (int) blockTable.readStart[b]);
+            int s = storedRow(i);
+            int b = blockTable.blockFor(s);
+            return blockView(b).mateTlenAt(s - (int) blockTable.readStart[b]);
         }
         if (isMateInfoInlineV2()) {
             _decodeMateV2();
@@ -1491,7 +1623,9 @@ public class GenomicRun
     @SuppressWarnings("unchecked")
     public byte[] readMateInfoInlineV2BlobBytes() {
         if (blockTable != null) {
-            return blockTable.count() == 1 ? blockView(0).readMateInfoInlineV2BlobBytes() : null;
+            // A grouped run's blobs are in stored order (M103).
+            return blockTable.count() == 1 && storedOf == null
+                ? blockView(0).readMateInfoInlineV2BlobBytes() : null;
         }
         ensureSignalChannels();
         if (!signalChannels.hasChild("mate_info")) return null;
@@ -1540,7 +1674,9 @@ public class GenomicRun
      *  when read_names is absent or carries a different codec. */
     public byte[] readNameTokV2BlobBytes() {
         if (blockTable != null) {
-            return blockTable.count() == 1 ? blockView(0).readNameTokV2BlobBytes() : null;
+            // A grouped run's blobs are in stored order (M103).
+            return blockTable.count() == 1 && storedOf == null
+                ? blockView(0).readNameTokV2BlobBytes() : null;
         }
         ensureSignalChannels();
         if (!signalChannels.hasChild("read_names")) return null;
@@ -1558,7 +1694,9 @@ public class GenomicRun
      *  group layout. Returns null otherwise. */
     public byte[] readRefDiffV2BlobBytes() {
         if (blockTable != null) {
-            return blockTable.count() == 1 ? blockView(0).readRefDiffV2BlobBytes() : null;
+            // A grouped run's blobs are in stored order (M103).
+            return blockTable.count() == 1 && storedOf == null
+                ? blockView(0).readRefDiffV2BlobBytes() : null;
         }
         ensureSignalChannels();
         if (!signalChannels.hasChild("sequences")) return null;
@@ -1594,9 +1732,28 @@ public class GenomicRun
      *  matters for uncompressed channels, which the codec path
      *  does not cache automatically. */
     public byte[] sequencesFull() {
-        if (blockTable != null) return concatBlocks(GenomicRun::sequencesFull);
+        if (blockTable != null) return inputOrderBytes(concatBlocks(GenomicRun::sequencesFull));
         ensureSignalChannels();
         return byteChannelFull("sequences");
+    }
+
+    /** A whole-run byte channel in stored order, re-gathered in input
+     *  order for a grouped run (M103); returned as is otherwise. */
+    private byte[] inputOrderBytes(byte[] stored) {
+        if (storedOf == null) return stored;
+        int n = storedOf.length;
+        // Stored row j holds input read inputIndex[j].
+        int[] lens = new int[n];
+        for (int j = 0; j < n; j++) lens[j] = index().lengthAt(inputIndex[j]);
+        long[] off = GenomicIndex.offsetsFromLengths(lens);
+        byte[] out = new byte[stored.length];
+        int o = 0;
+        for (int i = 0; i < n; i++) {
+            int s = storedOf[i];
+            System.arraycopy(stored, (int) off[s], out, o, lens[s]);
+            o += lens[s];
+        }
+        return out;
     }
 
     private byte[] concatBlocks(java.util.function.Function<GenomicRun, byte[]> f) {
@@ -1608,7 +1765,7 @@ public class GenomicRun
     /** Return the full ``signal_channels/qualities`` byte array.
      *  Same warm-cache semantics as {@link #sequencesFull}. */
     public byte[] qualitiesFull() {
-        if (blockTable != null) return concatBlocks(GenomicRun::qualitiesFull);
+        if (blockTable != null) return inputOrderBytes(concatBlocks(GenomicRun::qualitiesFull));
         ensureSignalChannels();
         return byteChannelFull("qualities");
     }
@@ -1642,7 +1799,10 @@ public class GenomicRun
         if (blockTable != null) {
             List<String> all = new ArrayList<>(readCount());
             for (int b = 0; b < blockTable.count(); b++) all.addAll(blockView(b).readNamesAll());
-            return all;
+            if (storedOf == null) return all;
+            List<String> inOrder = new ArrayList<>(all.size());
+            for (int s : storedOf) inOrder.add(all.get(s));
+            return inOrder;
         }
         int n = index().count();
         if (n == 0) return java.util.Collections.emptyList();

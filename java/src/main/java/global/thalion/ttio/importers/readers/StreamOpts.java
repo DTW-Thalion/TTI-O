@@ -12,7 +12,7 @@ import java.util.Map;
  *  {@code --extra k=v} pairs of {@code EncodeCli}): {@code reference}
  *  (FASTA path, enables REF_DIFF_V2), {@code embed_reference},
  *  {@code block_reads}, {@code block_bytes}, {@code legacy_whole_channel},
- *  {@code batch_reads}, {@code batch_spectra}. */
+ *  {@code batch_reads}, {@code batch_spectra}, {@code group_reads} (M103). */
 final class StreamOpts {
     private StreamOpts() {}
 
@@ -28,6 +28,15 @@ final class StreamOpts {
         if (v instanceof Boolean b) return b;
         if (v instanceof String s) return s.equals("1") || s.equalsIgnoreCase("true") || s.equalsIgnoreCase("yes");
         return false;
+    }
+
+    /** M103 read grouping; the cross-language CLIs pass "1"/"0". */
+    static boolean groupReads(Map<String, Object> opts) {
+        Object v = opts.get("group_reads");
+        if (v instanceof Boolean b) return b;
+        if (v == null) return false;
+        String s = v.toString().trim().toLowerCase(java.util.Locale.ROOT);
+        return s.equals("1") || s.equals("true") || s.equals("yes");
     }
 
     static Integer intOpt(Map<String, Object> opts, String key) {

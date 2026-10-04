@@ -698,7 +698,11 @@ static NSArray<NSString *> *ttioSplitTagTexts(NSData *flat,
 static BOOL ttioIsBlocksV1(id<TTIOStorageGroup> runGroup)
 {
     NSString *layout = readStringAttr(runGroup, @"layout");
-    return layout != nil && [layout isEqualToString:@"blocks_v1"];
+    // blocks_v1_grouped (M103) is blocks_v1 plus genomic_index/input_index;
+    // per-AU work walks stored rows block by block and leaves the column
+    // as it is.
+    return layout != nil && ([layout isEqualToString:@"blocks_v1"]
+                             || [layout isEqualToString:@"blocks_v1_grouped"]);
 }
 
 // {chromosome: bytes} of an embedded reference; nil when absent.
@@ -801,6 +805,9 @@ ttioBlocksV1ReferenceSeqs(id<TTIOStorageGroup> runGroup,
 // decoded plaintext channel bytes. The encrypt walker reads block b
 // through the run's own reader (indexBase = read_start[b]); the
 // decrypt walker reads a materialised one-block view (indexBase = 0).
+// Rows are STORED rows: a grouped run's reader presents input order
+// (M103), so stored row r is read as input index inputIndex[r], which
+// lands in block b and is served by the reader's cached block view.
 static TTIOWrittenGenomicRun *
 ttioBlocksV1BlockRun(TTIOGenomicRun *rd,
                      id<TTIOStorageGroup> runGroup,
@@ -835,10 +842,14 @@ ttioBlocksV1BlockRun(TTIOGenomicRun *rd,
     NSMutableArray *tags = [NSMutableArray arrayWithCapacity:nn];
     NSMutableData *seq = [NSMutableData data];
     NSMutableData *qual = [NSMutableData data];
+    NSData *inputIndex = rd.inputIndex;
+    const uint32_t *ii = (const uint32_t *)inputIndex.bytes;
+    NSUInteger nii = inputIndex.length / sizeof(uint32_t);
     for (NSUInteger i = 0; i < nn; i++) {
         @autoreleasepool {
-            TTIOAlignedRead *r =
-                [rd readAtIndex:(NSUInteger)(r0 + i) error:error];
+            NSUInteger row = (NSUInteger)(r0 + i);
+            if (ii != NULL && row < nii) row = ii[row];
+            TTIOAlignedRead *r = [rd readAtIndex:row error:error];
             if (!r) return nil;
             offP[i] = (uint64_t)seq.length;
             NSData *sBytes =

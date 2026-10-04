@@ -78,6 +78,14 @@ public enum PacketType {
     public static final String TRANSPORT_BLOCKS_V1_FEATURE =
         "transport_blocks_v1";
 
+    /** Required StreamHeader token (transport-spec v0.13) when a run in
+     *  the stream has the {@code blocks_v1_grouped} layout: its
+     *  BlockSidecars end with the block's slice of
+     *  {@code genomic_index/input_index} (M103). Wire-scoped, like
+     *  {@link #TRANSPORT_BLOCKS_V1_FEATURE}. */
+    public static final String TRANSPORT_BLOCKS_V1_GROUPED_FEATURE =
+        "transport_blocks_v1_grouped";
+
     /** Phase 2c-T codec id constants (mirror enums.Compression). */
     public static final int CODEC_ID_MATE_INLINE_V2    = 13;
     public static final int CODEC_ID_REF_DIFF_V2       = 14;

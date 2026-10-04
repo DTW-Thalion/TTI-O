@@ -541,13 +541,12 @@ static uint32_t ttioRngNextBoundedU32(TTIORngState *r, uint32_t bound)
         int32_t *templateLengths =
             (int32_t *)templateLengthsData.mutableBytes;
 
-        for (NSUInteger i = 0; i < n; i++) {
-            NSError *readErr = nil;
-            TTIOAlignedRead *r = [gr readAtIndex:i error:&readErr];
-            if (!r) {
-                if (error) *error = readErr;
-                return NO;
-            }
+        // In input order, like the index used below; the sequential
+        // walk decodes each block once, also for a grouped run (M103).
+        NSError *readErr = nil;
+        BOOL readOk = [gr iterReadsFrom:0 to:n error:&readErr
+                             usingBlock:^(TTIOAlignedRead *r, NSUInteger i, BOOL *stop) {
+            (void)stop;
             [readNames addObject:r.readName ?: @""];
             [cigars    addObject:r.cigar ?: @""];
             NSData *seqBytes =
@@ -558,6 +557,10 @@ static uint32_t ttioRngNextBoundedU32(TTIORngState *r, uint32_t bound)
             [mateChromosomes addObject:r.mateChromosome ?: @""];
             matePositions[i] = r.matePosition;
             templateLengths[i] = r.templateLength;
+        }];
+        if (!readOk || readNames.count != n) {
+            if (error) *error = readErr;
+            return nil;
         }
 
         // ── strip_read_names ─────────────────────────────────────
